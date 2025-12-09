@@ -1,0 +1,43 @@
+name: Auto Render Video
+
+on:
+  workflow_dispatch: # Cho phép bấm chạy thủ công để test
+    inputs:
+      video_links:
+        description: 'Chuỗi link video'
+        required: true
+        default: ''
+  repository_dispatch: # Cho phép GAS gọi tự động
+    types: [trigger-render]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions: # Cấp quyền ghi để upload file lên lại repo (nếu cần) hoặc đọc secrets
+      contents: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install moviepy gdown requests google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+
+      - name: Install system libraries (cho MoviePy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg imagemagick
+
+      - name: Run Render Script
+        env:
+          # Đây là chỗ lấy Key từ Secret bạn đã cài
+          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }} 
+          # Đây là chỗ nhận link từ GAS gửi sang
+          INPUT_LINKS: ${{ github.event.client_payload.links || inputs.video_links }}
+        run: python render.py
