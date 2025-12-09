@@ -27,7 +27,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install moviepy gdown requests google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+          pip install moviepy==1.0.3 decorator==4.4.2 gdown requests google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
 
       - name: Install system libraries (cho MoviePy)
         run: |
