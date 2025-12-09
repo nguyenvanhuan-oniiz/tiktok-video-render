@@ -1,43 +1,31 @@
 name: Auto Render Video
-
 on:
-  workflow_dispatch: # Cho phép bấm chạy thủ công để test
+  repository_dispatch:
+    types: [trigger-render]
+  workflow_dispatch:
     inputs:
       video_links:
-        description: 'Chuỗi link video'
+        description: 'Links'
         required: true
-        default: ''
-  repository_dispatch: # Cho phép GAS gọi tự động
-    types: [trigger-render]
 
 jobs:
-  build:
+  render:
     runs-on: ubuntu-latest
-    permissions: # Cấp quyền ghi để upload file lên lại repo (nếu cần) hoặc đọc secrets
-      contents: write
-      
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-
-      - name: Install dependencies
+      
+      - name: Install Libraries
         run: |
-          pip install moviepy==1.0.3 decorator==4.4.2 gdown requests google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          pip install moviepy==1.0.3 decorator==4.4.2 gdown requests google-api-python-client google-auth-oauthlib
 
-      - name: Install system libraries (cho MoviePy)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg imagemagick
-
-      - name: Run Render Script
+      - name: Run Script
         env:
-          # Đây là chỗ lấy Key từ Secret bạn đã cài
-          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }} 
-          # Đây là chỗ nhận link từ GAS gửi sang
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           INPUT_LINKS: ${{ github.event.client_payload.links || inputs.video_links }}
         run: python render.py
