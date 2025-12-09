@@ -1,115 +1,72 @@
 import os
 import sys
-import json
 import requests
 import gdown
 from moviepy.editor import VideoFileClip, concatenate_videoclips
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 # --- CẤU HÌNH ---
-# ID thư mục Google Drive bạn muốn lưu video vào (Lấy ở Bước 3)
-DRIVE_FOLDER_ID = "1WY5V73pYXGoshJjDpJW9LxCtrqEKLA6g" 
-
-# Link GAS Webapp
+DRIVE_FOLDER_ID = "1WY5V73pYXGoshJjDpJW9LxCtrqEKLA6g" # Lấy ID sau chữ folders/ trên link Drive
 GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzyMBIdWxdoeF-POFwSB5SCatEpKKsCOV0jbZdUsvnUZ1oryUqV8Og4bPu9pzZgo3xf/exec"
 
-def send_status(status, message, video_link=""):
+def send_webhook(status, message, link=""):
     try:
-        payload = {
-            "status": status,
-            "message": message,
-            "video_link": video_link
-        }
-        requests.post(GAS_WEBHOOK_URL, json=payload)
-        print(f"Sent webhook: {status}")
-    except Exception as e:
-        print(f"Webhook error: {e}")
+        requests.post(GAS_WEBHOOK_URL, json={"status": status, "message": message, "video_link": link})
+    except: pass
 
-def upload_to_drive(file_path, file_name, folder_id):
-    try:
-        # Lấy Credentials từ Secret GitHub
-        creds_json = os.environ.get('GDRIVE_CREDENTIALS')
-        if not creds_json:
-            raise Exception("Chưa cài đặt GDRIVE_CREDENTIALS trong GitHub Secret!")
-            
-        creds_dict = json.loads(creds_json)
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=['https://www.googleapis.com/auth/drive']
-        )
-        
-        service = build('drive', 'v3', credentials=creds)
-        
-        file_metadata = {
-            'name': file_name,
-            'parents': [folder_id]
-        }
-        media = MediaFileUpload(file_path, mimetype='video/mp4', resumable=True)
-        
-        print("Uploading to Google Drive...")
-        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-        
-        # Set quyền công khai (Anyone with link) để bạn xem được ngay
-        permission = {'type': 'anyone', 'role': 'reader'}
-        service.permissions().create(fileId=file.get('id'), body=permission).execute()
-        
-        return file.get('webViewLink')
-        
-    except Exception as e:
-        print(f"Upload Error: {e}")
-        return None
-
-# --- BẮT ĐẦU XỬ LÝ ---
 try:
-    print("Start rendering...")
+    # 1. SETUP AUTH GOOGLE DRIVE (USER)
+    client_id = os.environ.get('GDRIVE_CLIENT_ID')
+    client_secret = os.environ.get('GDRIVE_CLIENT_SECRET')
+    refresh_token = os.environ.get('GDRIVE_REFRESH_TOKEN')
     
+    creds = Credentials(None, refresh_token=refresh_token, token_uri="https://oauth2.googleapis.com/token", client_id=client_id, client_secret=client_secret)
+    service = build('drive', 'v3', credentials=creds)
+
+    # 2. XỬ LÝ LINK & TẢI VIDEO
+    print("Downloading videos...")
     input_str = os.environ.get('INPUT_LINKS', '')
-    if not input_str:
-        print("No links provided")
-        sys.exit(0)
-
-    raw_list = input_str.replace(',', ' ').split()
-    links = [l.strip() for l in raw_list if l.startswith('http')]
+    # Tách link bằng cả dấu phẩy và khoảng trắng
+    links = [l.strip() for l in input_str.replace(',', ' ').split() if l.startswith('http')]
     
-    print(f"Found {len(links)} links")
     clips = []
-    
     for i, link in enumerate(links):
-        download_link = link
+        # Xử lý link view -> download
+        dl_link = link
         if "view?usp" in link:
-            try:
-                file_id = link.split('/d/')[1].split('/')[0]
-                download_link = f"https://drive.google.com/uc?export=download&id={file_id}"
-            except:
-                pass # Fallback link gốc
-
-        filename = f"clip_{i}.mp4"
-        print(f"Downloading {i}...")
-        gdown.download(download_link, filename, quiet=False, fuzzy=True)
+             try: dl_link = f"https://drive.google.com/uc?export=download&id={link.split('/d/')[1].split('/')[0]}"
+             except: pass
         
-        clip = VideoFileClip(filename)
-        clip = clip.subclip(0, 3).fadein(0.5).fadeout(0.5)
+        fname = f"clip_{i}.mp4"
+        gdown.download(dl_link, fname, quiet=False, fuzzy=True)
+        
+        # Cắt 3s đầu + Fade
+        clip = VideoFileClip(fname).subclip(0, 3).fadein(0.5).fadeout(0.5)
         clips.append(clip)
 
-    if not clips:
-        send_status("ERROR", "No clips created")
-        sys.exit(1)
+    if not clips: raise Exception("No videos found")
 
-    final_clip = concatenate_videoclips(clips, method="compose")
-    output_path = "output_video.mp4"
-    final_clip.write_videofile(output_path, fps=30, codec="libx264", audio_codec="aac")
+    # 3. RENDER
+    print("Rendering...")
+    final = concatenate_videoclips(clips, method="compose")
+    final.write_videofile("output.mp4", fps=30, codec="libx264", audio_codec="aac")
 
-    # UPLOAD LÊN DRIVE
-    drive_link = upload_to_drive(output_path, "tiktok_render_final.mp4", DRIVE_FOLDER_ID)
+    # 4. UPLOAD
+    print("Uploading...")
+    metadata = {'name': 'tiktok_render_final.mp4', 'parents': [DRIVE_FOLDER_ID]}
+    media = MediaFileUpload("output.mp4", mimetype='video/mp4', resumable=True)
+    file = service.files().create(body=metadata, media_body=media, fields='id,webViewLink').execute()
     
-    if drive_link:
-        print(f"Uploaded successfully: {drive_link}")
-        send_status("SUCCESS", "Render & Upload xong!", drive_link)
-    else:
-        send_status("ERROR", "Render xong nhưng Upload thất bại")
+    # Public link
+    service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}).execute()
+    
+    link_result = file.get('webViewLink')
+    print(f"DONE: {link_result}")
+    send_webhook("SUCCESS", "Render xong!", link_result)
 
 except Exception as e:
-    send_status("ERROR", str(e))
-    print(f"Error: {e}")
+    print(f"ERROR: {e}")
+    send_webhook("ERROR", str(e))
     sys.exit(1)
