@@ -20,7 +20,8 @@ jobs:
       - name: Install Libraries
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
-          pip install moviepy==1.0.3 decorator==4.4.2 gdown requests google-api-python-client google-auth-oauthlib
+          # QUAN TRỌNG: Phải cài Pillow==9.5.0 để có ANTIALIAS
+          pip install moviepy==1.0.3 Pillow==9.5.0 decorator==4.4.2 gdown requests google-api-python-client google-auth-oauthlib google-auth-httplib2
 
       - name: Run Script
         env:
