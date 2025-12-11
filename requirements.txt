@@ -1,7 +1,6 @@
-gspread
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
 google-api-python-client
-oauth2client
+google-auth-httplib2
+google-auth-oauthlib
+gspread
 requests
+Pillow
