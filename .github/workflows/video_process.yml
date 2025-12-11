@@ -1,0 +1,30 @@
+name: Auto Mix Video Worker
+
+on:
+  repository_dispatch:
+    types: [process_video_request]
+
+jobs:
+  process_videos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Libraries
+        run: pip install -r requirements.txt
+
+      - name: Run Processing Script
+        env:
+          # Tạo Secret tên GDRIVE_CREDS chứa nội dung file JSON service account
+          GDRIVE_CREDS: ${{ secrets.GDRIVE_CREDS }} 
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+        run: python main.py
