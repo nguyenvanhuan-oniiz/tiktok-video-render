@@ -113,7 +113,6 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 def get_id_from_url(url):
-    """Lấy ID chuẩn từ link Google Drive"""
     if not url: return None
     if "id=" in url: return url.split("id=")[1].split("&")[0]
     if "/file/d/" in url: return url.split("/file/d/")[1].split("/")[0]
@@ -121,74 +120,84 @@ def get_id_from_url(url):
     return url
 
 def download_file(service, file_id, output_path):
-    """Hàm tải file từ Drive an toàn"""
-    request = service.files().get_media(fileId=file_id)
-    fh = io.FileIO(output_path, 'wb')
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while done is False:
-        status, done = downloader.next_chunk()
+    try:
+        request = service.files().get_media(fileId=file_id)
+        fh = io.FileIO(output_path, 'wb')
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+    except Exception as e:
+        print(f"⚠️ Lỗi tải file ID {file_id}: {e}")
+        raise e
 
 def main():
     print("🚀 Bắt đầu quy trình xử lý...")
 
-    # 1. Lấy dữ liệu đầu vào
     payload_env = os.environ.get('PAYLOAD')
     creds_env = os.environ.get('GDRIVE_CREDENTIALS')
 
     if not payload_env or not creds_env:
-        print("❌ Lỗi: Thiếu Payload hoặc GDRIVE_CREDENTIALS Secret.")
+        print("❌ Lỗi: Thiếu Payload hoặc GDRIVE_CREDENTIALS.")
         return
 
     payload = json.loads(payload_env)
-    creds_dict = json.loads(creds_env) # Parse JSON từ Secret
+    creds_dict = json.loads(creds_env)
 
-    # Dữ liệu từ Sheet
     spreadsheet_id = payload.get('spreadsheetId')
     sheet_name = payload.get('sheetName')
     folder_link = payload.get('folderLink')
     videos = payload.get('videos')
 
-    print(f"📄 Sheet: {sheet_name} | Số lượng video: {len(videos)}")
+    # --- DEBUG THÔNG TIN BOT ---
+    print(f"🤖 Bot Email: {creds_dict.get('client_email')}")
+    print(f"🎯 Target Spreadsheet ID: {spreadsheet_id}")
+    print(f"📄 Sheet Tab: {sheet_name} | Số lượng video: {len(videos)}")
+    # ---------------------------
 
-    # 2. Kết nối Google Services
+    # Kết nối
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     gc = gspread.authorize(creds)
     drive_service = build('drive', 'v3', credentials=creds)
 
-    # 3. Mở Sheet cần ghi
+    # Mở Sheet
     try:
         sh = gc.open_by_key(spreadsheet_id)
         worksheet = sh.worksheet(sheet_name)
+        print("✅ Đã kết nối Sheet thành công!")
     except Exception as e:
-        print(f"❌ Không thể mở Sheet: {e}")
+        print(f"❌ KHÔNG THỂ MỞ SHEET. Lỗi chi tiết: {e}")
+        print("👉 HÃY CHẮC CHẮN BẠN ĐÃ SHARE QUYỀN EDITOR CHO EMAIL BOT Ở TRÊN.")
         return
 
-    # 4. Kiểm tra/Tạo Folder theo ngày
+    # Folder ngày tháng
     parent_folder_id = get_id_from_url(folder_link)
-    current_date_name = datetime.now().strftime('%d/%m/%Y') # VD: 11/12/2025
-    date_for_filename = datetime.now().strftime('%d%m%Y')   # VD: 11122025
+    current_date_name = datetime.now().strftime('%d/%m/%Y')
+    date_for_filename = datetime.now().strftime('%d%m%Y')
     
-    # Tìm folder ngày
-    query = f"mimeType='application/vnd.google-apps.folder' and name='{current_date_name}' and '{parent_folder_id}' in parents and trashed=false"
-    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-    items = results.get('files', [])
+    try:
+        query = f"mimeType='application/vnd.google-apps.folder' and name='{current_date_name}' and '{parent_folder_id}' in parents and trashed=false"
+        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        items = results.get('files', [])
 
-    target_folder_id = None
-    if not items:
-        print(f"📂 Tạo folder mới: {current_date_name}")
-        file_metadata = {
-            'name': current_date_name,
-            'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [parent_folder_id]
-        }
-        folder = drive_service.files().create(body=file_metadata, fields='id').execute()
-        target_folder_id = folder.get('id')
-    else:
-        target_folder_id = items[0]['id']
-        print(f"♻️ Sử dụng folder cũ: {current_date_name}")
+        target_folder_id = None
+        if not items:
+            print(f"📂 Tạo folder mới: {current_date_name}")
+            file_metadata = {
+                'name': current_date_name,
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [parent_folder_id]
+            }
+            folder = drive_service.files().create(body=file_metadata, fields='id').execute()
+            target_folder_id = folder.get('id')
+        else:
+            target_folder_id = items[0]['id']
+            print(f"♻️ Sử dụng folder cũ: {current_date_name}")
+    except Exception as e:
+        print(f"❌ Lỗi truy cập Folder Drive: {e}")
+        return
 
-    # 5. Xử lý từng Video
+    # Xử lý video
     os.makedirs("temp", exist_ok=True)
 
     for vid in videos:
@@ -198,26 +207,30 @@ def main():
 
         try:
             print(f"\n--- Đang làm dòng {row} ---")
-            
-            # Đặt tên file theo yêu cầu: kitty80074_11122025_3.mp4
             final_filename = f"{sheet_name}_{date_for_filename}_{row}.mp4"
             
             vid_path = f"temp/in_{row}.mp4"
             aud_path = f"temp/music_{row}.mp3"
             out_path = f"temp/{final_filename}"
 
-            # A. Tải Video
-            print("⬇️ Đang tải video...")
+            # Tải
             download_file(drive_service, vid_id, vid_path)
+            
+            # Nhạc random (Nếu nhạc lỗi thì thử bài khác)
+            for _ in range(3): # Thử 3 lần nếu link nhạc die
+                try:
+                    music_url = random.choice(MUSIC_LIST)
+                    music_id = get_id_from_url(music_url)
+                    download_file(drive_service, music_id, aud_path)
+                    break
+                except:
+                    continue
 
-            # B. Tải Nhạc (Random)
-            music_url = random.choice(MUSIC_LIST)
-            music_id = get_id_from_url(music_url)
-            print("🎵 Đang tải nhạc...")
-            download_file(drive_service, music_id, aud_path)
+            if not os.path.exists(aud_path):
+                print("⚠️ Không tải được nhạc, bỏ qua video này.")
+                continue
 
-            # C. Ghép (FFmpeg)
-            print("🎬 Đang Render...")
+            # Render
             subprocess.run([
                 "ffmpeg", "-y", "-v", "error",
                 "-i", vid_path, "-i", aud_path,
@@ -225,23 +238,15 @@ def main():
                 "-shortest", out_path
             ], check=True)
 
-            # D. Upload
-            print(f"⬆️ Uploading: {final_filename}")
-            file_metadata = {
-                'name': final_filename,
-                'parents': [target_folder_id]
-            }
+            # Upload
+            file_metadata = {'name': final_filename, 'parents': [target_folder_id]}
             media = MediaFileUpload(out_path, mimetype='video/mp4')
-            file_up = drive_service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id'
-            ).execute()
+            file_up = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-            # E. Ghi Sheet (Cột H = cột 8)
+            # Ghi Sheet
             new_link = f"https://drive.google.com/uc?export=download&id={file_up.get('id')}"
             worksheet.update_cell(row, 8, new_link)
-            print("✅ Đã ghi link vào Sheet!")
+            print(f"✅ Xong: {final_filename}")
 
             # Cleanup
             if os.path.exists(vid_path): os.remove(vid_path)
@@ -250,8 +255,6 @@ def main():
 
         except Exception as e:
             print(f"❌ Lỗi dòng {row}: {e}")
-            # Ghi lỗi vào Sheet (tùy chọn)
-            # worksheet.update_cell(row, 8, f"Error: {e}")
 
     print("🎉 HOÀN THÀNH TOÀN BỘ!")
 
