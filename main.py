@@ -9,7 +9,7 @@ import requests
 import re
 import textwrap
 from datetime import datetime
-from PIL import Image, ImageDraw, ImageFont  # Thư viện xử lý ảnh
+from PIL import Image, ImageDraw, ImageFont
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -110,17 +110,14 @@ MUSIC_LIST = [
     "https://drive.google.com/file/d/1s2mpwP8IhYIb_OIylHShBhvPGK_iJwoY/view?usp=drive_link"
 ]
 
-# --- HÀM HỖ TRỢ XỬ LÝ TEXT & VIDEO ---
+# --- HÀM HỖ TRỢ ---
 def download_font():
-    """Tải font Arial nếu chưa có"""
     font_path = "arial.ttf"
     if not os.path.exists(font_path):
-        print("⏳ Đang tải Font Arial...")
         subprocess.run(["wget", "-O", font_path, "https://github.com/matomo-org/travis-scripts/raw/master/fonts/Arial.ttf", "-q"])
     return font_path
 
 def get_video_size(video_path):
-    """Lấy kích thước video để căn chữ cho chuẩn"""
     try:
         cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", 
                "-show_entries", "stream=width,height", "-of", "json", video_path]
@@ -130,23 +127,19 @@ def get_video_size(video_path):
         h = int(info['streams'][0]['height'])
         return w, h
     except:
-        return 1080, 1920 # Mặc định nếu lỗi
+        return 1080, 1920
 
 def create_text_overlay(text, video_width, video_height, output_img="overlay.png"):
-    """Vẽ chữ lên ảnh trong suốt (Logic chuẩn từ Colab)"""
     img = Image.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # Cỡ chữ: 1/18 chiều rộng video
     font_size = int(video_width / 18)
     font_path = "arial.ttf"
-    
     try:
         font = ImageFont.truetype(font_path, font_size)
     except:
         font = ImageFont.load_default()
 
-    # Wrap text (xuống dòng)
     avg_char_width = font_size * 0.5
     max_chars = int((video_width * 0.8) / avg_char_width)
     
@@ -154,9 +147,8 @@ def create_text_overlay(text, video_width, video_height, output_img="overlay.png
     wrapped_lines = textwrap.wrap(clean_text, width=max_chars)
     final_text = "\n".join(wrapped_lines)
 
-    # Vẽ chữ viền đen
     draw.multiline_text(
-        (video_width / 2, 60),  # Vị trí y=60
+        (video_width / 2, 60), 
         final_text, 
         font=font, 
         fill="white", 
@@ -168,7 +160,6 @@ def create_text_overlay(text, video_width, video_height, output_img="overlay.png
     img.save(output_img)
     return output_img
 
-# --- CÁC HÀM CŨ ---
 def get_id_from_url(url):
     if not url: return None
     if "id=" in url: return url.split("id=")[1].split("&")[0]
@@ -205,9 +196,7 @@ def download_file(service, file_id, output_path):
         raise e
 
 def main():
-    print("🚀 Bắt đầu quy trình (Có Text + Viền Đen)...")
-    
-    # Tải font ngay từ đầu
+    print("🚀 Bắt đầu quy trình (Fix Mapping FFmpeg)...")
     download_font()
 
     payload_env = os.environ.get('PAYLOAD')
@@ -233,7 +222,7 @@ def main():
         traceback.print_exc()
         return
 
-    # 2. MỞ SHEET & FOLDER
+    # 2. SETUP SHEET & FOLDER
     try:
         sh = gc.open_by_key(spreadsheet_id)
         worksheet = sh.worksheet(sheet_name)
@@ -242,7 +231,6 @@ def main():
         current_date_name = datetime.now().strftime('%d/%m/%Y')
         date_for_filename = datetime.now().strftime('%d%m%Y')
         
-        # Check Folder
         query = f"mimeType='application/vnd.google-apps.folder' and name='{current_date_name}' and '{parent_folder_id}' in parents and trashed=false"
         results = drive_service.files().list(q=query, fields="files(id)").execute()
         items = results.get('files', [])
@@ -260,13 +248,13 @@ def main():
         print(f"❌ Lỗi khởi tạo: {e}")
         return
 
-    # 3. XỬ LÝ VIDEO
+    # 3. VÒNG LẶP XỬ LÝ
     os.makedirs("temp", exist_ok=True)
 
     for vid in videos:
         row = vid['row']
         url = vid['url']
-        text_content = vid.get('text', '').strip() # Lấy text từ payload
+        text_content = vid.get('text', '').strip()
         
         vid_id = get_id_from_url(url)
         final_filename = f"{sheet_name}_{date_for_filename}_{row}.mp4"
@@ -279,10 +267,9 @@ def main():
         try:
             print(f"\n--- Đang xử lý dòng {row} (Text: {'CÓ' if text_content else 'KHÔNG'}) ---")
 
-            # A. Tải Video
             download_file(drive_service, vid_id, vid_path)
 
-            # B. Tải Nhạc
+            # Tải nhạc
             music_success = False
             for _ in range(3):
                 try:
@@ -297,38 +284,33 @@ def main():
                 print("⚠️ Lỗi nhạc, bỏ qua.")
                 continue
 
-            # C. RENDER (Chia 2 trường hợp)
-            
+            # === RENDER ===
             if text_content:
-                # === TRƯỜNG HỢP 1: CÓ TEXT (Re-encode) ===
-                print("🎨 Đang vẽ chữ và render...")
-                
-                # 1. Lấy size video
+                # TRƯỜNG HỢP CÓ TEXT (ĐÃ SỬA LỖI MAPPING)
                 w, h = get_video_size(vid_path)
-                
-                # 2. Tạo ảnh chứa chữ
                 create_text_overlay(text_content, w, h, img_overlay)
                 
-                # 3. Lệnh FFmpeg (Overlay + Re-encode)
                 cmd = [
                     "ffmpeg", "-y", "-v", "error",
-                    "-i", vid_path,
-                    "-i", aud_path,
-                    "-i", img_overlay,
-                    "-filter_complex", "[0:v][2:v]overlay=0:0", # Đè ảnh lên video
-                    "-map", "0:v", "-map", "1:a", # Lấy hình (đã đè) + tiếng nhạc
-                    "-c:v", "libx264", "-preset", "veryfast", # Re-encode nhanh
+                    "-i", vid_path,        # Input 0
+                    "-i", aud_path,        # Input 1
+                    "-i", img_overlay,     # Input 2
+                    # Lệnh này đè input 2 lên input 0, đặt tên kết quả là [v]
+                    "-filter_complex", "[0:v][2:v]overlay=0:0[v]", 
+                    "-map", "[v]",         # Dùng stream [v] làm video output
+                    "-map", "1:a",         # Dùng stream 1 làm audio output
+                    "-c:v", "libx264", "-preset", "veryfast",
+                    "-pix_fmt", "yuv420p", # Quan trọng: Định dạng màu chuẩn
                     "-c:a", "aac",
                     "-shortest", out_path
                 ]
             else:
-                # === TRƯỜNG HỢP 2: KHÔNG CÓ TEXT (Copy siêu tốc) ===
-                print("⚡ Không có text -> Render siêu tốc...")
+                # TRƯỜNG HỢP KHÔNG TEXT (COPY)
                 cmd = [
                     "ffmpeg", "-y", "-v", "error",
                     "-i", vid_path,
                     "-i", aud_path,
-                    "-c:v", "copy", # Copy stream hình ảnh
+                    "-c:v", "copy",
                     "-map", "0:v:0",
                     "-map", "1:a:0",
                     "-shortest", out_path
@@ -336,12 +318,12 @@ def main():
 
             subprocess.run(cmd, check=True)
 
-            # D. Upload
+            # Upload
             file_metadata = {'name': final_filename, 'parents': [target_folder_id]}
             media = MediaFileUpload(out_path, mimetype='video/mp4')
             file_up = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-            # E. Ghi Sheet
+            # Ghi Sheet
             new_link = f"https://drive.google.com/uc?export=download&id={file_up.get('id')}"
             worksheet.update_cell(row, 8, new_link)
             print(f"✅ Xong: {final_filename}")
@@ -357,5 +339,7 @@ def main():
 
     print("🎉 HOÀN THÀNH JOB!")
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
