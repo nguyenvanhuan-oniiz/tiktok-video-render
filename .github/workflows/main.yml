@@ -1,0 +1,31 @@
+name: Auto Video Editor
+
+on:
+  repository_dispatch:
+    types: [process_video]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        pip install --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib gspread requests
+
+    - name: Run Processing Script
+      env:
+        # Lấy Secret GDRIVE_CREDENTIALS bạn đã có
+        GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+        # Lấy dữ liệu từ Google Sheet gửi sang
+        PAYLOAD: ${{ toJson(github.event.client_payload) }}
+      run: python main.py
