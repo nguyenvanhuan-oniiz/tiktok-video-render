@@ -14,18 +14,18 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: '3.10' # <--- SỬA DÒNG NÀY (3.9 -> 3.10)
 
     - name: Install Dependencies
+      # Cài đặt phiên bản cụ thể để tránh xung đột
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-        pip install --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib gspread requests
+        pip install --upgrade pip
+        pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib gspread requests
 
     - name: Run Processing Script
       env:
-        # Lấy Secret GDRIVE_CREDENTIALS bạn đã có
         GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
-        # Lấy dữ liệu từ Google Sheet gửi sang
         PAYLOAD: ${{ toJson(github.event.client_payload) }}
       run: python main.py
