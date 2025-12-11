@@ -3,10 +3,11 @@ import json
 import random
 import time
 import subprocess
+import traceback
+import gspread
 import requests
 from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import io
@@ -104,20 +105,31 @@ MUSIC_LIST = [
     "https://drive.google.com/file/d/1IgKpXSvDT0QCBoDH5YNquqbqCWweBYrs/view?usp=drive_link",
     "https://drive.google.com/file/d/1s2mpwP8IhYIb_OIylHShBhvPGK_iJwoY/view?usp=drive_link"
 ]
-# Để demo ngắn gọn, tôi giả định list này đã đầy đủ. 
-# Code dưới sẽ xử lý cả link view lẫn link download.
-
-# --- CẤU HÌNH ---
-SCOPES = [
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive'
-]
 def get_id_from_url(url):
     if not url: return None
     if "id=" in url: return url.split("id=")[1].split("&")[0]
     if "/file/d/" in url: return url.split("/file/d/")[1].split("/")[0]
     if "/folders/" in url: return url.split("/folders/")[1].split("?")[0]
     return url
+
+def get_user_credentials():
+    """Tạo Credential từ Refresh Token (Đóng vai User)"""
+    client_id = os.environ.get('GDRIVE_CLIENT_ID')
+    client_secret = os.environ.get('GDRIVE_CLIENT_SECRET')
+    refresh_token = os.environ.get('GDRIVE_REFRESH_TOKEN')
+    
+    if not client_id or not client_secret or not refresh_token:
+        raise Exception("❌ Thiếu Client ID, Secret hoặc Refresh Token trong GitHub Secrets!")
+
+    # Cấu trúc token info
+    info = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "token_uri": "https://oauth2.googleapis.com/token"
+    }
+    
+    return Credentials.from_authorized_user_info(info)
 
 def download_file(service, file_id, output_path):
     try:
@@ -128,59 +140,60 @@ def download_file(service, file_id, output_path):
         while done is False:
             status, done = downloader.next_chunk()
     except Exception as e:
-        print(f"⚠️ Lỗi tải file ID {file_id}: {e}")
+        print(f"⚠️ Lỗi tải file {file_id}: {e}")
         raise e
 
 def main():
-    print("🚀 Bắt đầu quy trình xử lý...")
+    print("🚀 Bắt đầu quy trình (Chế độ User OAuth)...")
 
     payload_env = os.environ.get('PAYLOAD')
-    creds_env = os.environ.get('GDRIVE_CREDENTIALS')
-
-    if not payload_env or not creds_env:
-        print("❌ Lỗi: Thiếu Payload hoặc GDRIVE_CREDENTIALS.")
+    if not payload_env:
+        print("❌ Lỗi: Thiếu Payload.")
         return
 
     payload = json.loads(payload_env)
-    creds_dict = json.loads(creds_env)
-
     spreadsheet_id = payload.get('spreadsheetId')
     sheet_name = payload.get('sheetName')
     folder_link = payload.get('folderLink')
     videos = payload.get('videos')
 
-    # --- DEBUG THÔNG TIN BOT ---
-    print(f"🤖 Bot Email: {creds_dict.get('client_email')}")
-    print(f"🎯 Target Spreadsheet ID: {spreadsheet_id}")
-    print(f"📄 Sheet Tab: {sheet_name} | Số lượng video: {len(videos)}")
-    # ---------------------------
+    print(f"📄 Sheet: {sheet_name} | Videos: {len(videos)}")
 
-    # Kết nối
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    gc = gspread.authorize(creds)
-    drive_service = build('drive', 'v3', credentials=creds)
+    # 1. KẾT NỐI BẰNG REFRESH TOKEN
+    try:
+        creds = get_user_credentials()
+        # Refresh token để lấy access token mới nhất
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(requests.Request())
+            
+        gc = gspread.authorize(creds)
+        drive_service = build('drive', 'v3', credentials=creds)
+        print("✅ Đăng nhập thành công với tư cách User!")
+    except Exception:
+        print("❌ Lỗi đăng nhập OAuth:")
+        traceback.print_exc()
+        return
 
-    # Mở Sheet
+    # 2. MỞ SHEET
     try:
         sh = gc.open_by_key(spreadsheet_id)
         worksheet = sh.worksheet(sheet_name)
-        print("✅ Đã kết nối Sheet thành công!")
     except Exception as e:
-        print(f"❌ KHÔNG THỂ MỞ SHEET. Lỗi chi tiết: {e}")
-        print("👉 HÃY CHẮC CHẮN BẠN ĐÃ SHARE QUYỀN EDITOR CHO EMAIL BOT Ở TRÊN.")
+        print(f"❌ Lỗi mở Sheet: {e}")
+        traceback.print_exc()
         return
 
-    # Folder ngày tháng
+    # 3. XỬ LÝ FOLDER
     parent_folder_id = get_id_from_url(folder_link)
     current_date_name = datetime.now().strftime('%d/%m/%Y')
     date_for_filename = datetime.now().strftime('%d%m%Y')
     
+    target_folder_id = None
     try:
         query = f"mimeType='application/vnd.google-apps.folder' and name='{current_date_name}' and '{parent_folder_id}' in parents and trashed=false"
         results = drive_service.files().list(q=query, fields="files(id, name)").execute()
         items = results.get('files', [])
 
-        target_folder_id = None
         if not items:
             print(f"📂 Tạo folder mới: {current_date_name}")
             file_metadata = {
@@ -194,10 +207,11 @@ def main():
             target_folder_id = items[0]['id']
             print(f"♻️ Sử dụng folder cũ: {current_date_name}")
     except Exception as e:
-        print(f"❌ Lỗi truy cập Folder Drive: {e}")
+        print("❌ Lỗi truy cập Folder (Có thể do quyền hoặc sai ID):")
+        traceback.print_exc()
         return
 
-    # Xử lý video
+    # 4. LOOP XỬ LÝ
     os.makedirs("temp", exist_ok=True)
 
     for vid in videos:
@@ -206,28 +220,30 @@ def main():
         vid_id = get_id_from_url(url)
 
         try:
-            print(f"\n--- Đang làm dòng {row} ---")
+            print(f"\n--- Đang xử lý dòng {row} ---")
             final_filename = f"{sheet_name}_{date_for_filename}_{row}.mp4"
             
             vid_path = f"temp/in_{row}.mp4"
             aud_path = f"temp/music_{row}.mp3"
             out_path = f"temp/{final_filename}"
 
-            # Tải
+            # Download Video
             download_file(drive_service, vid_id, vid_path)
-            
-            # Nhạc random (Nếu nhạc lỗi thì thử bài khác)
-            for _ in range(3): # Thử 3 lần nếu link nhạc die
+
+            # Download Nhạc
+            music_success = False
+            for _ in range(3):
                 try:
                     music_url = random.choice(MUSIC_LIST)
                     music_id = get_id_from_url(music_url)
                     download_file(drive_service, music_id, aud_path)
+                    music_success = True
                     break
                 except:
                     continue
-
-            if not os.path.exists(aud_path):
-                print("⚠️ Không tải được nhạc, bỏ qua video này.")
+            
+            if not music_success:
+                print("⚠️ Lỗi tải nhạc, bỏ qua.")
                 continue
 
             # Render
@@ -238,12 +254,12 @@ def main():
                 "-shortest", out_path
             ], check=True)
 
-            # Upload
+            # Upload (Dùng User Quota -> Không bị lỗi Storage nữa)
             file_metadata = {'name': final_filename, 'parents': [target_folder_id]}
             media = MediaFileUpload(out_path, mimetype='video/mp4')
             file_up = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-            # Ghi Sheet
+            # Update Sheet
             new_link = f"https://drive.google.com/uc?export=download&id={file_up.get('id')}"
             worksheet.update_cell(row, 8, new_link)
             print(f"✅ Xong: {final_filename}")
@@ -256,7 +272,7 @@ def main():
         except Exception as e:
             print(f"❌ Lỗi dòng {row}: {e}")
 
-    print("🎉 HOÀN THÀNH TOÀN BỘ!")
+    print("🎉 HOÀN THÀNH JOB!")
 
 if __name__ == "__main__":
     main()
