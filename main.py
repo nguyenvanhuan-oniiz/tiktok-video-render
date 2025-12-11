@@ -5,15 +5,18 @@ import time
 import subprocess
 import traceback
 import gspread
-import requests # Thư viện request thường
+import requests
+import re
+import textwrap
 from datetime import datetime
+from PIL import Image, ImageDraw, ImageFont  # Thư viện xử lý ảnh
 from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request # <--- QUAN TRỌNG: Import đúng cái này để Refresh Token
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import io
 
-# --- DANH SÁCH NHẠC (90 BÀI) ---
+# --- LIST NHẠC (DÁN ĐỦ 90 LINK) ---
 MUSIC_LIST = [
     "https://drive.google.com/file/d/1ztVtzwvA1kZUg2-_o67kVEvrtCv1LLo-/view?usp=drive_link",
     "https://drive.google.com/file/d/1qez4tjOAU1K1urJ2TnZCpXO6D__6vLky/view?usp=drive_link",
@@ -106,6 +109,66 @@ MUSIC_LIST = [
     "https://drive.google.com/file/d/1IgKpXSvDT0QCBoDH5YNquqbqCWweBYrs/view?usp=drive_link",
     "https://drive.google.com/file/d/1s2mpwP8IhYIb_OIylHShBhvPGK_iJwoY/view?usp=drive_link"
 ]
+
+# --- HÀM HỖ TRỢ XỬ LÝ TEXT & VIDEO ---
+def download_font():
+    """Tải font Arial nếu chưa có"""
+    font_path = "arial.ttf"
+    if not os.path.exists(font_path):
+        print("⏳ Đang tải Font Arial...")
+        subprocess.run(["wget", "-O", font_path, "https://github.com/matomo-org/travis-scripts/raw/master/fonts/Arial.ttf", "-q"])
+    return font_path
+
+def get_video_size(video_path):
+    """Lấy kích thước video để căn chữ cho chuẩn"""
+    try:
+        cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", 
+               "-show_entries", "stream=width,height", "-of", "json", video_path]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        info = json.loads(result.stdout)
+        w = int(info['streams'][0]['width'])
+        h = int(info['streams'][0]['height'])
+        return w, h
+    except:
+        return 1080, 1920 # Mặc định nếu lỗi
+
+def create_text_overlay(text, video_width, video_height, output_img="overlay.png"):
+    """Vẽ chữ lên ảnh trong suốt (Logic chuẩn từ Colab)"""
+    img = Image.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # Cỡ chữ: 1/18 chiều rộng video
+    font_size = int(video_width / 18)
+    font_path = "arial.ttf"
+    
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except:
+        font = ImageFont.load_default()
+
+    # Wrap text (xuống dòng)
+    avg_char_width = font_size * 0.5
+    max_chars = int((video_width * 0.8) / avg_char_width)
+    
+    clean_text = re.sub(r'[^\u0000-\uFFFF]', '', str(text)).strip()
+    wrapped_lines = textwrap.wrap(clean_text, width=max_chars)
+    final_text = "\n".join(wrapped_lines)
+
+    # Vẽ chữ viền đen
+    draw.multiline_text(
+        (video_width / 2, 60),  # Vị trí y=60
+        final_text, 
+        font=font, 
+        fill="white", 
+        anchor="ma", 
+        align="center", 
+        stroke_width=2, 
+        stroke_fill="black"
+    )
+    img.save(output_img)
+    return output_img
+
+# --- CÁC HÀM CŨ ---
 def get_id_from_url(url):
     if not url: return None
     if "id=" in url: return url.split("id=")[1].split("&")[0]
@@ -114,13 +177,12 @@ def get_id_from_url(url):
     return url
 
 def get_user_credentials():
-    """Tạo Credential từ Refresh Token (Đóng vai User)"""
     client_id = os.environ.get('GDRIVE_CLIENT_ID')
     client_secret = os.environ.get('GDRIVE_CLIENT_SECRET')
     refresh_token = os.environ.get('GDRIVE_REFRESH_TOKEN')
     
     if not client_id or not client_secret or not refresh_token:
-        raise Exception("❌ Thiếu Client ID, Secret hoặc Refresh Token trong GitHub Secrets!")
+        raise Exception("❌ Thiếu Secrets!")
 
     info = {
         "client_id": client_id,
@@ -128,7 +190,6 @@ def get_user_credentials():
         "refresh_token": refresh_token,
         "token_uri": "https://oauth2.googleapis.com/token"
     }
-    
     return Credentials.from_authorized_user_info(info)
 
 def download_file(service, file_id, output_path):
@@ -144,12 +205,13 @@ def download_file(service, file_id, output_path):
         raise e
 
 def main():
-    print("🚀 Bắt đầu quy trình (Chế độ User OAuth - Fix Refresh)...")
+    print("🚀 Bắt đầu quy trình (Có Text + Viền Đen)...")
+    
+    # Tải font ngay từ đầu
+    download_font()
 
     payload_env = os.environ.get('PAYLOAD')
-    if not payload_env:
-        print("❌ Lỗi: Thiếu Payload.")
-        return
+    if not payload_env: return
 
     payload = json.loads(payload_env)
     spreadsheet_id = payload.get('spreadsheetId')
@@ -159,80 +221,68 @@ def main():
 
     print(f"📄 Sheet: {sheet_name} | Videos: {len(videos)}")
 
-    # 1. KẾT NỐI BẰNG REFRESH TOKEN (ĐÃ SỬA LỖI)
+    # 1. KẾT NỐI
     try:
         creds = get_user_credentials()
-        
-        # Tự động refresh token nếu hết hạn
         if creds and creds.expired and creds.refresh_token:
-            # Dùng đúng class Request của google.auth.transport
-            creds.refresh(Request()) 
-            
+            creds.refresh(Request())
         gc = gspread.authorize(creds)
         drive_service = build('drive', 'v3', credentials=creds)
-        print("✅ Đăng nhập thành công với tư cách User!")
+        print("✅ Đăng nhập User thành công!")
     except Exception:
-        print("❌ Lỗi đăng nhập OAuth:")
         traceback.print_exc()
         return
 
-    # 2. MỞ SHEET
+    # 2. MỞ SHEET & FOLDER
     try:
         sh = gc.open_by_key(spreadsheet_id)
         worksheet = sh.worksheet(sheet_name)
-    except Exception as e:
-        print(f"❌ Lỗi mở Sheet: {e}")
-        traceback.print_exc()
-        return
-
-    # 3. XỬ LÝ FOLDER
-    parent_folder_id = get_id_from_url(folder_link)
-    current_date_name = datetime.now().strftime('%d/%m/%Y')
-    date_for_filename = datetime.now().strftime('%d%m%Y')
-    
-    target_folder_id = None
-    try:
+        
+        parent_folder_id = get_id_from_url(folder_link)
+        current_date_name = datetime.now().strftime('%d/%m/%Y')
+        date_for_filename = datetime.now().strftime('%d%m%Y')
+        
+        # Check Folder
         query = f"mimeType='application/vnd.google-apps.folder' and name='{current_date_name}' and '{parent_folder_id}' in parents and trashed=false"
-        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        results = drive_service.files().list(q=query, fields="files(id)").execute()
         items = results.get('files', [])
-
+        
         if not items:
-            print(f"📂 Tạo folder mới: {current_date_name}")
-            file_metadata = {
-                'name': current_date_name,
-                'mimeType': 'application/vnd.google-apps.folder',
-                'parents': [parent_folder_id]
-            }
+            file_metadata = {'name': current_date_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_folder_id]}
             folder = drive_service.files().create(body=file_metadata, fields='id').execute()
             target_folder_id = folder.get('id')
+            print(f"📂 Tạo folder mới: {current_date_name}")
         else:
             target_folder_id = items[0]['id']
-            print(f"♻️ Sử dụng folder cũ: {current_date_name}")
+            print(f"♻️ Dùng folder cũ: {current_date_name}")
+
     except Exception as e:
-        print("❌ Lỗi truy cập Folder (Có thể do quyền hoặc sai ID):")
-        traceback.print_exc()
+        print(f"❌ Lỗi khởi tạo: {e}")
         return
 
-    # 4. LOOP XỬ LÝ
+    # 3. XỬ LÝ VIDEO
     os.makedirs("temp", exist_ok=True)
 
     for vid in videos:
         row = vid['row']
         url = vid['url']
+        text_content = vid.get('text', '').strip() # Lấy text từ payload
+        
         vid_id = get_id_from_url(url)
+        final_filename = f"{sheet_name}_{date_for_filename}_{row}.mp4"
+        
+        vid_path = f"temp/in_{row}.mp4"
+        aud_path = f"temp/music_{row}.mp3"
+        img_overlay = f"temp/overlay_{row}.png"
+        out_path = f"temp/{final_filename}"
 
         try:
-            print(f"\n--- Đang xử lý dòng {row} ---")
-            final_filename = f"{sheet_name}_{date_for_filename}_{row}.mp4"
-            
-            vid_path = f"temp/in_{row}.mp4"
-            aud_path = f"temp/music_{row}.mp3"
-            out_path = f"temp/{final_filename}"
+            print(f"\n--- Đang xử lý dòng {row} (Text: {'CÓ' if text_content else 'KHÔNG'}) ---")
 
-            # Download Video
+            # A. Tải Video
             download_file(drive_service, vid_id, vid_path)
 
-            # Download Nhạc
+            # B. Tải Nhạc
             music_success = False
             for _ in range(3):
                 try:
@@ -241,38 +291,69 @@ def main():
                     download_file(drive_service, music_id, aud_path)
                     music_success = True
                     break
-                except:
-                    continue
+                except: continue
             
             if not music_success:
-                print("⚠️ Lỗi tải nhạc, bỏ qua.")
+                print("⚠️ Lỗi nhạc, bỏ qua.")
                 continue
 
-            # Render
-            subprocess.run([
-                "ffmpeg", "-y", "-v", "error",
-                "-i", vid_path, "-i", aud_path,
-                "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
-                "-shortest", out_path
-            ], check=True)
+            # C. RENDER (Chia 2 trường hợp)
+            
+            if text_content:
+                # === TRƯỜNG HỢP 1: CÓ TEXT (Re-encode) ===
+                print("🎨 Đang vẽ chữ và render...")
+                
+                # 1. Lấy size video
+                w, h = get_video_size(vid_path)
+                
+                # 2. Tạo ảnh chứa chữ
+                create_text_overlay(text_content, w, h, img_overlay)
+                
+                # 3. Lệnh FFmpeg (Overlay + Re-encode)
+                cmd = [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-i", vid_path,
+                    "-i", aud_path,
+                    "-i", img_overlay,
+                    "-filter_complex", "[0:v][2:v]overlay=0:0", # Đè ảnh lên video
+                    "-map", "0:v", "-map", "1:a", # Lấy hình (đã đè) + tiếng nhạc
+                    "-c:v", "libx264", "-preset", "veryfast", # Re-encode nhanh
+                    "-c:a", "aac",
+                    "-shortest", out_path
+                ]
+            else:
+                # === TRƯỜNG HỢP 2: KHÔNG CÓ TEXT (Copy siêu tốc) ===
+                print("⚡ Không có text -> Render siêu tốc...")
+                cmd = [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-i", vid_path,
+                    "-i", aud_path,
+                    "-c:v", "copy", # Copy stream hình ảnh
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                    "-shortest", out_path
+                ]
 
-            # Upload (Dùng User Quota)
+            subprocess.run(cmd, check=True)
+
+            # D. Upload
             file_metadata = {'name': final_filename, 'parents': [target_folder_id]}
             media = MediaFileUpload(out_path, mimetype='video/mp4')
             file_up = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-            # Update Sheet
+            # E. Ghi Sheet
             new_link = f"https://drive.google.com/uc?export=download&id={file_up.get('id')}"
             worksheet.update_cell(row, 8, new_link)
             print(f"✅ Xong: {final_filename}")
 
-            # Cleanup
-            if os.path.exists(vid_path): os.remove(vid_path)
-            if os.path.exists(aud_path): os.remove(aud_path)
-            if os.path.exists(out_path): os.remove(out_path)
-
         except Exception as e:
             print(f"❌ Lỗi dòng {row}: {e}")
+        
+        # Cleanup
+        if os.path.exists(vid_path): os.remove(vid_path)
+        if os.path.exists(aud_path): os.remove(aud_path)
+        if os.path.exists(out_path): os.remove(out_path)
+        if os.path.exists(img_overlay): os.remove(img_overlay)
 
     print("🎉 HOÀN THÀNH JOB!")
 
