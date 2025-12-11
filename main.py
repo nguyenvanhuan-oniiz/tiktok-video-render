@@ -5,9 +5,10 @@ import time
 import subprocess
 import traceback
 import gspread
-import requests
+import requests # Thư viện request thường
 from datetime import datetime
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request # <--- QUAN TRỌNG: Import đúng cái này để Refresh Token
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import io
@@ -121,7 +122,6 @@ def get_user_credentials():
     if not client_id or not client_secret or not refresh_token:
         raise Exception("❌ Thiếu Client ID, Secret hoặc Refresh Token trong GitHub Secrets!")
 
-    # Cấu trúc token info
     info = {
         "client_id": client_id,
         "client_secret": client_secret,
@@ -144,7 +144,7 @@ def download_file(service, file_id, output_path):
         raise e
 
 def main():
-    print("🚀 Bắt đầu quy trình (Chế độ User OAuth)...")
+    print("🚀 Bắt đầu quy trình (Chế độ User OAuth - Fix Refresh)...")
 
     payload_env = os.environ.get('PAYLOAD')
     if not payload_env:
@@ -159,12 +159,14 @@ def main():
 
     print(f"📄 Sheet: {sheet_name} | Videos: {len(videos)}")
 
-    # 1. KẾT NỐI BẰNG REFRESH TOKEN
+    # 1. KẾT NỐI BẰNG REFRESH TOKEN (ĐÃ SỬA LỖI)
     try:
         creds = get_user_credentials()
-        # Refresh token để lấy access token mới nhất
+        
+        # Tự động refresh token nếu hết hạn
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(requests.Request())
+            # Dùng đúng class Request của google.auth.transport
+            creds.refresh(Request()) 
             
         gc = gspread.authorize(creds)
         drive_service = build('drive', 'v3', credentials=creds)
@@ -254,7 +256,7 @@ def main():
                 "-shortest", out_path
             ], check=True)
 
-            # Upload (Dùng User Quota -> Không bị lỗi Storage nữa)
+            # Upload (Dùng User Quota)
             file_metadata = {'name': final_filename, 'parents': [target_folder_id]}
             media = MediaFileUpload(out_path, mimetype='video/mp4')
             file_up = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
