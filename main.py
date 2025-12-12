@@ -110,7 +110,7 @@ MUSIC_LIST = [
     "https://drive.google.com/file/d/1s2mpwP8IhYIb_OIylHShBhvPGK_iJwoY/view?usp=drive_link"
 ]
 
-# --- HÀM HỖ TRỢ ---
+# --- CÁC HÀM HỖ TRỢ ---
 def download_font():
     font_path = "arial.ttf"
     if not os.path.exists(font_path):
@@ -196,7 +196,7 @@ def download_file(service, file_id, output_path):
         raise e
 
 def main():
-    print("🚀 Bắt đầu quy trình (Fix Mapping FFmpeg)...")
+    print("🚀 Bắt đầu quy trình (Full Logic: Nhạc riêng + Text)...")
     download_font()
 
     payload_env = os.environ.get('PAYLOAD')
@@ -253,10 +253,11 @@ def main():
 
     for vid in videos:
         row = vid['row']
-        url = vid['url']
+        vid_url = vid['url']
         text_content = vid.get('text', '').strip()
+        music_url_custom = vid.get('music', '').strip() # Lấy link nhạc từ cột K
         
-        vid_id = get_id_from_url(url)
+        vid_id = get_id_from_url(vid_url)
         final_filename = f"{sheet_name}_{date_for_filename}_{row}.mp4"
         
         vid_path = f"temp/in_{row}.mp4"
@@ -265,52 +266,72 @@ def main():
         out_path = f"temp/{final_filename}"
 
         try:
-            print(f"\n--- Đang xử lý dòng {row} (Text: {'CÓ' if text_content else 'KHÔNG'}) ---")
+            print(f"\n--- Đang xử lý dòng {row} ---")
+            print(f"   + Text: {'CÓ' if text_content else 'KHÔNG'}")
+            print(f"   + Nhạc: {'CUSTOM (Cột K)' if music_url_custom else 'RANDOM (Mặc định)'}")
 
+            # A. TẢI VIDEO
             download_file(drive_service, vid_id, vid_path)
 
-            # Tải nhạc
+            # B. XỬ LÝ NHẠC (CUSTOM HOẶC RANDOM)
             music_success = False
-            for _ in range(3):
+            
+            # Nếu có link nhạc riêng -> Ưu tiên tải
+            if music_url_custom:
                 try:
-                    music_url = random.choice(MUSIC_LIST)
-                    music_id = get_id_from_url(music_url)
-                    download_file(drive_service, music_id, aud_path)
-                    music_success = True
-                    break
-                except: continue
+                    custom_id = get_id_from_url(music_url_custom)
+                    if custom_id:
+                        download_file(drive_service, custom_id, aud_path)
+                        music_success = True
+                    else:
+                        print("⚠️ Link nhạc custom không hợp lệ -> Chuyển sang random.")
+                except Exception as e:
+                    print(f"⚠️ Lỗi tải nhạc custom: {e} -> Chuyển sang random.")
+            
+            # Nếu chưa có nhạc (do không có link custom hoặc tải lỗi) -> Dùng Random
+            if not music_success:
+                for _ in range(3):
+                    try:
+                        rand_url = random.choice(MUSIC_LIST_DEFAULT)
+                        rand_id = get_id_from_url(rand_url)
+                        download_file(drive_service, rand_id, aud_path)
+                        music_success = True
+                        break
+                    except: continue
             
             if not music_success:
-                print("⚠️ Lỗi nhạc, bỏ qua.")
+                print("❌ Không thể tải bất kỳ bài nhạc nào. Bỏ qua video này.")
                 continue
 
-            # === RENDER ===
+            # C. RENDER (LOGIC ĐA NĂNG)
             if text_content:
-                # TRƯỜNG HỢP CÓ TEXT (ĐÃ SỬA LỖI MAPPING)
+                # --- TRƯỜNG HỢP CÓ TEXT (Re-encode) ---
                 w, h = get_video_size(vid_path)
                 create_text_overlay(text_content, w, h, img_overlay)
                 
                 cmd = [
                     "ffmpeg", "-y", "-v", "error",
-                    "-i", vid_path,        # Input 0
-                    "-i", aud_path,        # Input 1
-                    "-i", img_overlay,     # Input 2
-                    # Lệnh này đè input 2 lên input 0, đặt tên kết quả là [v]
+                    "-i", vid_path,        # [0]
+                    "-i", aud_path,        # [1]
+                    "-i", img_overlay,     # [2]
                     "-filter_complex", "[0:v][2:v]overlay=0:0[v]", 
-                    "-map", "[v]",         # Dùng stream [v] làm video output
-                    "-map", "1:a",         # Dùng stream 1 làm audio output
+                    "-map", "[v]",         
+                    "-map", "1:a",         
                     "-c:v", "libx264", "-preset", "veryfast",
-                    "-pix_fmt", "yuv420p", # Quan trọng: Định dạng màu chuẩn
-                    "-c:a", "aac",
+                    "-pix_fmt", "yuv420p", 
+                    "-c:a", "aac",         # Đảm bảo audio ra chuẩn aac
                     "-shortest", out_path
                 ]
             else:
-                # TRƯỜNG HỢP KHÔNG TEXT (COPY)
+                # --- TRƯỜNG HỢP KHÔNG TEXT (Copy Stream) ---
+                # Lưu ý: Khi dùng nhạc custom, codec audio có thể khác nhau (wav, mp3...).
+                # Để an toàn nhất, ta vẫn copy video nhưng re-encode audio sang aac.
                 cmd = [
                     "ffmpeg", "-y", "-v", "error",
                     "-i", vid_path,
                     "-i", aud_path,
-                    "-c:v", "copy",
+                    "-c:v", "copy",        # Copy video (Siêu nhanh)
+                    "-c:a", "aac",         # Convert audio sang aac (An toàn)
                     "-map", "0:v:0",
                     "-map", "1:a:0",
                     "-shortest", out_path
@@ -318,12 +339,12 @@ def main():
 
             subprocess.run(cmd, check=True)
 
-            # Upload
+            # D. UPLOAD
             file_metadata = {'name': final_filename, 'parents': [target_folder_id]}
             media = MediaFileUpload(out_path, mimetype='video/mp4')
             file_up = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-            # Ghi Sheet
+            # E. GHI SHEET
             new_link = f"https://drive.google.com/uc?export=download&id={file_up.get('id')}"
             worksheet.update_cell(row, 8, new_link)
             print(f"✅ Xong: {final_filename}")
@@ -339,7 +360,5 @@ def main():
 
     print("🎉 HOÀN THÀNH JOB!")
 
-if __name__ == "__main__":
-    main()
 if __name__ == "__main__":
     main()
