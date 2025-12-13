@@ -2,7 +2,7 @@ name: Auto Video Editor (OAuth User)
 
 on:
   repository_dispatch:
-    types: [process_video]
+    types: [process_video, process_long_video]
 
 jobs:
   build:
