@@ -134,38 +134,59 @@ DEVICE_DB = {
 # ==============================================================================
 # 2. CÁC HÀM HỖ TRỢ
 # ==============================================================================
-def get_metadata_flags(user_device_code):
+def get_metadata_flags(user_input):
     """
-    Lấy cờ Metadata dựa trên Device Code từ Sheet.
-    Nếu không có hoặc sai -> Random thiết bị.
+    Xử lý thông minh:
+    1. Nếu là JSON -> Parse lấy thông tin custom.
+    2. Nếu là Mã (ip14) -> Tra trong DB.
+    3. Nếu sai/trống -> Random.
     """
-    code_norm = str(user_device_code).lower().strip()
-    
-    if code_norm in DEVICE_DB:
-        device = DEVICE_DB[code_norm]
-        print(f"📱 Cấu hình thiết bị: {device['model']}")
-    else:
-        # Nếu để trống hoặc ghi sai -> Random
-        device = random.choice(list(DEVICE_DB.values()))
-        print(f"🎲 Không có mã Device (hoặc sai), dùng Random: {device['model']}")
+    user_input = str(user_input).strip()
+    device = None
 
-    # 1. Random Bitrate (Luôn thay đổi để tránh trùng Hash File)
-    bitrate = f"{random.randint(2000, 3500)}k"
+    # TRƯỜNG HỢP 1: NGƯỜI DÙNG NHẬP JSON (Bắt đầu bằng dấu {)
+    if user_input.startswith("{"):
+        try:
+            device = json.loads(user_input)
+            print(f"🔧 Custom Device từ JSON: {device.get('model', 'Unknown')}")
+        except json.JSONDecodeError:
+            print(f"⚠️ JSON ở cột I bị sai cú pháp! Chuyển sang Random.")
+            device = None
+
+    # TRƯỜNG HỢP 2: NGƯỜI DÙNG NHẬP MÃ NGẮN (ip14, sony...)
+    elif user_input.lower() in DEVICE_DB:
+        device = DEVICE_DB[user_input.lower()]
+        print(f"📱 Cấu hình theo mã: {device['model']}")
+
+    # TRƯỜNG HỢP 3: KHÔNG CÓ DỮ LIỆU HOẶC SAI -> RANDOM
+    if not device:
+        device = random.choice(list(DEVICE_DB.values()))
+        if user_input and not user_input.startswith("{"):
+            print(f"🎲 Mã '{user_input}' không tồn tại. Dùng Random: {device['model']}")
+        else:
+            print(f"🎲 Chế độ Random: {device['model']}")
+
+    # --- ĐẢM BẢO CÁC TRƯỜNG DỮ LIỆU KHÔNG BỊ THIẾU ---
+    make = device.get("make", "Apple")
+    model = device.get("model", "iPhone")
+    sw = device.get("sw", "iOS")
+
+    # --- RANDOM CÁC THÔNG SỐ KHÁC ĐỂ TRÁNH QUÉT ---
+    bitrate = f"{random.randint(2000, 4000)}k" # Bitrate dao động mạnh hơn
     
-    # 2. Visual Noise (Rất nhẹ để tránh AI quét ảnh trùng lặp)
-    # Giữ nguyên độ sáng/bão hòa, chỉ dao động cực nhỏ 1-2%
-    gamma = round(random.uniform(0.98, 1.02), 2)
-    sat = round(random.uniform(0.98, 1.02), 2)
+    # Visual Noise (Nhiễu hạt + Đổi màu siêu nhẹ)
+    gamma = round(random.uniform(0.97, 1.03), 2)
+    sat = round(random.uniform(0.97, 1.03), 2)
     video_filter = f"eq=gamma={gamma}:saturation={sat}"
 
     flags = [
-        "-metadata", f"make={device['make']}",
-        "-metadata", f"model={device['model']}",
-        "-metadata", f"software={device['sw']}",
+        "-metadata", f"make={make}",
+        "-metadata", f"model={model}",
+        "-metadata", f"software={sw}",
         "-metadata", f"creation_time={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}",
         "-b:v", bitrate,
-        "-maxrate", "4000k",
-        "-bufsize", "6000k"
+        "-maxrate", "4500k",
+        "-bufsize", "9000k" # Tăng buffer để stream mượt hơn
     ]
     return flags, video_filter
     
