@@ -119,7 +119,10 @@ TRANSITIONS = [
     "fade", "wipeleft", "wiperight", "wipeup", "wipedown", 
     "slideleft", "slideright", "slideup", "slidedown",
     "circlecrop", "rectcrop", "distance", "fadeblack", "pixelize",
-    "hblur", "wblur", "radial", "smoothleft", "smoothright"
+    "hblur", "wblur", "radial", "smoothleft", "smoothright",
+    "fade", "wipeleft", "wiperight", "slideleft", "slideright", 
+    "circlecrop", "rectcrop", "distance", "pixelize", "radial", 
+    "smoothleft", "smoothright", "hlslice", "hrslice", "wu"
 ]
 # --- KHO THIẾT BỊ (DEVICE DATABASE) ---
 DEVICE_DB = {
@@ -134,47 +137,24 @@ DEVICE_DB = {
 # ==============================================================================
 # 2. CÁC HÀM HỖ TRỢ
 # ==============================================================================
+
 def get_metadata_flags(user_input):
-    """
-    Xử lý thông minh:
-    1. Nếu là JSON -> Parse lấy thông tin custom.
-    2. Nếu là Mã (ip14) -> Tra trong DB.
-    3. Nếu sai/trống -> Random.
-    """
     user_input = str(user_input).strip()
     device = None
-
-    # TRƯỜNG HỢP 1: NGƯỜI DÙNG NHẬP JSON (Bắt đầu bằng dấu {)
     if user_input.startswith("{"):
-        try:
-            device = json.loads(user_input)
-            print(f"🔧 Custom Device từ JSON: {device.get('model', 'Unknown')}")
-        except json.JSONDecodeError:
-            print(f"⚠️ JSON ở cột I bị sai cú pháp! Chuyển sang Random.")
-            device = None
-
-    # TRƯỜNG HỢP 2: NGƯỜI DÙNG NHẬP MÃ NGẮN (ip14, sony...)
+        try: device = json.loads(user_input)
+        except: device = None
     elif user_input.lower() in DEVICE_DB:
         device = DEVICE_DB[user_input.lower()]
-        print(f"📱 Cấu hình theo mã: {device['model']}")
+    
+    if not device: device = random.choice(list(DEVICE_DB.values()))
 
-    # TRƯỜNG HỢP 3: KHÔNG CÓ DỮ LIỆU HOẶC SAI -> RANDOM
-    if not device:
-        device = random.choice(list(DEVICE_DB.values()))
-        if user_input and not user_input.startswith("{"):
-            print(f"🎲 Mã '{user_input}' không tồn tại. Dùng Random: {device['model']}")
-        else:
-            print(f"🎲 Chế độ Random: {device['model']}")
-
-    # --- ĐẢM BẢO CÁC TRƯỜNG DỮ LIỆU KHÔNG BỊ THIẾU ---
     make = device.get("make", "Apple")
     model = device.get("model", "iPhone")
     sw = device.get("sw", "iOS")
-
-    # --- RANDOM CÁC THÔNG SỐ KHÁC ĐỂ TRÁNH QUÉT ---
-    bitrate = f"{random.randint(2000, 4000)}k" # Bitrate dao động mạnh hơn
+    bitrate = f"{random.randint(2000, 4000)}k"
     
-    # Visual Noise (Nhiễu hạt + Đổi màu siêu nhẹ)
+    # Anti-spam filter: Đổi màu siêu nhẹ
     gamma = round(random.uniform(0.97, 1.03), 2)
     sat = round(random.uniform(0.97, 1.03), 2)
     video_filter = f"eq=gamma={gamma}:saturation={sat}"
@@ -184,130 +164,88 @@ def get_metadata_flags(user_input):
         "-metadata", f"model={model}",
         "-metadata", f"software={sw}",
         "-metadata", f"creation_time={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}",
-        "-b:v", bitrate,
-        "-maxrate", "4500k",
-        "-bufsize", "9000k" # Tăng buffer để stream mượt hơn
+        "-b:v", bitrate, "-maxrate", "4500k", "-bufsize", "9000k"
     ]
     return flags, video_filter
-    
+
 def download_font():
-    """Tải font Arial nếu chưa có"""
-    font_path = "arial.ttf"
-    if not os.path.exists(font_path):
-        subprocess.run(["wget", "-O", font_path, "https://github.com/matomo-org/travis-scripts/raw/master/fonts/Arial.ttf", "-q"])
-    return font_path
+    if not os.path.exists("arial.ttf"):
+        subprocess.run(["wget", "-O", "arial.ttf", "https://github.com/matomo-org/travis-scripts/raw/master/fonts/Arial.ttf", "-q"])
+
+def get_video_duration(video_path):
+    """Lấy độ dài video bằng ffprobe"""
+    try:
+        cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
+        return float(result.stdout.strip())
+    except: return 6.0 # Mặc định 6s nếu lỗi
 
 def get_video_size(video_path):
-    """Lấy kích thước video"""
     try:
         cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", 
                "-show_entries", "stream=width,height", "-of", "json", video_path]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         info = json.loads(result.stdout)
-        w = int(info['streams'][0]['width'])
-        h = int(info['streams'][0]['height'])
-        return w, h
-    except:
-        return 1080, 1920
+        return int(info['streams'][0]['width']), int(info['streams'][0]['height'])
+    except: return 1080, 1920
 
 def create_text_overlay(text, video_width, video_height, output_img="overlay.png"):
-    """Tạo ảnh overlay chứa text"""
     img = Image.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    
     font_size = int(video_width / 18)
-    font_path = "arial.ttf"
-    try:
-        font = ImageFont.truetype(font_path, font_size)
-    except:
-        font = ImageFont.load_default()
-
-    avg_char_width = font_size * 0.5
-    max_chars = int((video_width * 0.8) / avg_char_width)
-    
+    try: font = ImageFont.truetype("arial.ttf", font_size)
+    except: font = ImageFont.load_default()
     clean_text = re.sub(r'[^\u0000-\uFFFF]', '', str(text)).strip()
-    wrapped_lines = textwrap.wrap(clean_text, width=max_chars)
-    final_text = "\n".join(wrapped_lines)
-
-    draw.multiline_text(
-        (video_width / 2, 60), 
-        final_text, 
-        font=font, 
-        fill="white", 
-        anchor="ma", 
-        align="center", 
-        stroke_width=2, 
-        stroke_fill="black"
-    )
+    wrapped_lines = textwrap.wrap(clean_text, width=int((video_width * 0.8) / (font_size * 0.5)))
+    draw.multiline_text((video_width/2, 60), "\n".join(wrapped_lines), font=font, fill="white", anchor="ma", align="center", stroke_width=2, stroke_fill="black")
     img.save(output_img)
-    return output_img
 
 def get_id_from_url(url):
-    """Lấy File ID từ Link Drive"""
     if not url: return None
     url = str(url).strip()
     try:
         if "id=" in url: return url.split("id=")[1].split("&")[0]
         if "/file/d/" in url: return url.split("/file/d/")[1].split("/")[0]
         if "/folders/" in url: return url.split("/folders/")[1].split("?")[0]
-    except:
-        pass
+    except: pass
     return url
 
 def get_user_credentials():
-    """Lấy User Credential từ Secrets"""
     client_id = os.environ.get('GDRIVE_CLIENT_ID')
     client_secret = os.environ.get('GDRIVE_CLIENT_SECRET')
     refresh_token = os.environ.get('GDRIVE_REFRESH_TOKEN')
-    
-    if not client_id or not client_secret or not refresh_token:
-        raise Exception("❌ Thiếu Secrets!")
-    info = {
+    if not client_id: raise Exception("Missing Secrets")
+    return Credentials.from_authorized_user_info({
         "client_id": client_id, "client_secret": client_secret,
         "refresh_token": refresh_token, "token_uri": "https://oauth2.googleapis.com/token"
-    }
-    return Credentials.from_authorized_user_info(info)
+    })
 
 def download_file(service, file_id, output_path):
-    """Tải file từ Drive"""
     try:
         request = service.files().get_media(fileId=file_id)
         fh = io.FileIO(output_path, 'wb')
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while done is False: status, done = downloader.next_chunk()
-    except Exception as e:
-        print(f"   ⚠️ Lỗi tải file {file_id}: {e}")
-        raise e
+    except Exception as e: print(f"      ⚠️ Lỗi tải file {file_id}: {e}"); raise e
 
 def get_or_create_folder(drive_service, parent_id, suffix=""):
-    """Tạo hoặc lấy folder theo ngày"""
-    date_str = datetime.now().strftime('%d/%m/%Y')
-    folder_name = f"{date_str}{suffix}" 
-    
-    query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
-    results = drive_service.files().list(q=query, fields="files(id)").execute()
-    items = results.get('files', [])
-    
+    folder_name = f"{datetime.now().strftime('%d/%m/%Y')}{suffix}" 
+    q = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents and trashed=false"
+    items = drive_service.files().list(q=q, fields="files(id)").execute().get('files', [])
     if not items:
-        file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
-        folder = drive_service.files().create(body=file_metadata, fields='id').execute()
-        return folder.get('id')
+        return drive_service.files().create(body={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}, fields='id').execute().get('id')
     return items[0]['id']
 
 # ==============================================================================
-# 3. LOGIC XỬ LÝ (CÁC CHẾ ĐỘ)
+# 3. LOGIC XỬ LÝ MIX 2 VIDEO (ĐÃ SỬA LỖI GHÉP & CHUYỂN CẢNH)
 # ==============================================================================
-
 def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, pairs, device_code):
-    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO")
+    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (FIXED: 12s + Xfade)")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix=" mix 2 video")
     os.makedirs("temp", exist_ok=True)
     date_fn = datetime.now().strftime('%d%m%Y')
 
-    # Lấy Metadata Flag (Cố định cho cả lô nếu có code, nhưng random filter/bitrate mỗi lần gọi)
-    # Lưu ý: Mỗi video cần gọi hàm get_metadata_flags 1 lần để random Bitrate khác nhau
-    
     for p_idx, pair in enumerate(pairs):
         item1 = pair['item1']
         item2 = pair['item2']
@@ -321,19 +259,24 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             download_file(drive_service, get_id_from_url(item2['url']), v2_path)
         except: continue
 
+        # Lấy độ dài thực tế để tính điểm chuyển cảnh
+        dur1 = get_video_duration(v1_path)
+        dur2 = get_video_duration(v2_path)
+        print(f"   ⏱️ Info: Vid1={dur1}s, Vid2={dur2}s")
+
         tasks = [
-            (item1, v1_path, v2_path, f"{item1['row']}_{item2['row']}"), 
-            (item2, v2_path, v1_path, f"{item2['row']}_{item1['row']}") 
+            (item1, v1_path, v2_path, dur1, dur2, f"{item1['row']}_{item2['row']}"), 
+            (item2, v2_path, v1_path, dur2, dur1, f"{item2['row']}_{item1['row']}") 
         ]
 
-        for item, vid_a, vid_b, suffix in tasks:
+        for item, vid_a, vid_b, d_a, d_b, suffix in tasks:
             row = item['row']
             final_name = f"{sheet_name}_{date_fn}_{suffix}.mp4"
             out_path = f"temp/{final_name}"
             music_path = f"temp/music_{row}.mp3"
             img_path = f"temp/overlay_{row}.png"
             
-            print(f"   🔨 Render {final_name}")
+            print(f"   🔨 Render {final_name}...")
 
             music_ok = False
             if item.get('music'):
@@ -344,13 +287,25 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                 except: pass
             if not music_ok: continue
 
-            # Lấy Meta & Filter (Gọi trong vòng lặp để mỗi video có Bitrate khác nhau)
             meta_flags, anti_spam_filter = get_metadata_flags(device_code)
+            transition = random.choice(TRANSITIONS)
+            
+            # Tính toán Xfade Offset
+            # Offset = Độ dài video đầu - Thời lượng chuyển cảnh (0.5s)
+            offset = d_a - 0.5
+            if offset < 0: offset = 0 # Phòng trường hợp video quá ngắn
 
+            # Filter Complex:
+            # 1. Scale cả 2 về cùng size & áp dụng Anti-Spam
+            # 2. Xfade để nối video A và B
+            # 3. Overlay Text (nếu có)
+            
             filter_complex = ""
             filter_complex += f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v0s];"
             filter_complex += f"[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v1s];"
-            filter_complex += "[v0s][v1s]concat=n=2:v=1:a=0[vcat];"
+            
+            # XFADE thay vì Concat
+            filter_complex += f"[v0s][v1s]xfade=transition={transition}:duration=0.5:offset={offset}[v_merged];"
             
             inputs = ["-i", vid_a, "-i", vid_b, "-i", music_path]
             map_cmd = ["-map", "[vout]", "-map", "2:a"]
@@ -358,21 +313,30 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             if item.get('text'):
                 create_text_overlay(item['text'], 1080, 1920, img_path)
                 inputs.extend(["-i", img_path])
-                filter_complex += f"[vcat][3:v]overlay=0:0[vout]"
+                filter_complex += f"[v_merged][3:v]overlay=0:0[vout]"
             else:
-                filter_complex += f"[vcat]null[vout]"
+                filter_complex += f"[v_merged]null[vout]"
 
+            # QUAN TRỌNG: Bỏ -shortest để không bị cắt theo file nhạc ngắn.
+            # Dùng -t để giới hạn tổng thời gian = Tổng 2 video - 0.5s chuyển cảnh
+            total_duration = d_a + d_b - 0.5
+            
             cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex] + map_cmd + \
-                  ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest"] + meta_flags + [out_path]
+                  ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-t", str(total_duration)] + meta_flags + [out_path]
             
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             if os.path.exists(out_path):
-                media = MediaFileUpload(out_path, mimetype='video/mp4')
-                up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
-                worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
-                print(f"      ✅ Xong.")
-            
+                # Double check size > 0
+                if os.path.getsize(out_path) > 1000:
+                    media = MediaFileUpload(out_path, mimetype='video/mp4')
+                    up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
+                    worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
+                    print(f"      ✅ Xong ({total_duration}s)")
+                else: print("      ❌ Lỗi Render (File rỗng)")
+            else:
+                print("      ❌ Lỗi Render (Không thấy file out).")
+
             if os.path.exists(music_path): os.remove(music_path)
             if os.path.exists(img_path): os.remove(img_path)
             if os.path.exists(out_path): os.remove(out_path)
@@ -380,6 +344,9 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
         if os.path.exists(v1_path): os.remove(v1_path)
         if os.path.exists(v2_path): os.remove(v2_path)
 
+# ==============================================================================
+# 4. LOGIC XỬ LÝ LONG VIDEO (CÓ ANTI-SPAM)
+# ==============================================================================
 def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, all_rows, device_code):
     print("🎬 CHẾ ĐỘ: EDIT LONG VIDEO")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix="-Edited")
@@ -419,13 +386,11 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             out_name = f"{sheet_name}_product{product_num}_{i+1}.mp4"
             out_path = f"temp/{out_name}"
             
-            # --- META & ANTI-SPAM ---
             meta_flags, anti_spam_filter = get_metadata_flags(device_code)
 
             inputs_str = "".join([f"-i {f} " for f in input_files])
             filter_str = ""
             for idx in range(4):
-                # Áp dụng anti-spam filter cho từng clip nhỏ
                 filter_str += f"[{idx}:v]trim=0:3,setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v{idx}];"
             
             off = 2.5; curr = off
@@ -474,7 +439,6 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
                 except: pass
             if not m_ok: continue
 
-            # Lấy Meta
             meta_flags, anti_spam_filter = get_metadata_flags(device_code)
 
             if vid.get('text'):
@@ -484,7 +448,6 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
                        "-filter_complex", f"[0:v]{anti_spam_filter}[vf];[vf][2:v]overlay=0:0", 
                        "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", "-shortest"] + meta_flags + [o_path]
             else:
-                # Không text vẫn phải re-encode để ép metadata + filter
                 cmd = ["ffmpeg", "-y", "-v", "error", "-i", v_path, "-i", a_path, 
                        "-vf", anti_spam_filter, 
                        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-map", "0:v", "-map", "1:a", "-shortest"] + meta_flags + [o_path]
@@ -511,8 +474,7 @@ def main():
     payload = json.loads(os.environ.get('PAYLOAD'))
     sheet_name = payload.get('sheetName')
     videos = payload.get('videos')
-    # Nhận Device Code từ GAS
-    device_code = payload.get('deviceCode', '') # Nếu không có thì là rỗng
+    device_code = payload.get('deviceCode', '') 
     
     print(f"📄 Sheet: {sheet_name} | Device: {device_code or 'AUTO'}")
 
@@ -527,7 +489,6 @@ def main():
     ws = sh.worksheet(sheet_name)
     p_id = get_id_from_url(payload.get('folderLink'))
 
-    # Điều hướng
     if len(videos) > 0 and 'type' in videos[0] and videos[0]['type'] == 'pair':
         process_mix_2_mode(drive_service, ws, sheet_name, p_id, videos, device_code)
     elif len(videos) > 0 and 'source_url' in videos[0]:
