@@ -121,11 +121,54 @@ TRANSITIONS = [
     "circlecrop", "rectcrop", "distance", "fadeblack", "pixelize",
     "hblur", "wblur", "radial", "smoothleft", "smoothright"
 ]
-
+# --- KHO THIẾT BỊ (DEVICE DATABASE) ---
+DEVICE_DB = {
+    "ip14": {"make": "Apple", "model": "iPhone 14 Pro Max", "sw": "16.2"},
+    "ip13": {"make": "Apple", "model": "iPhone 13 Pro", "sw": "15.0"},
+    "ip12": {"make": "Apple", "model": "iPhone 12", "sw": "14.8"},
+    "s23":  {"make": "Samsung", "model": "SM-S918B", "sw": "Android 13"},
+    "s22":  {"make": "Samsung", "model": "SM-S908B", "sw": "Android 12"},
+    "pixel": {"make": "Google", "model": "Pixel 7 Pro", "sw": "Android 13"},
+    "sony": {"make": "Sony", "model": "ILCE-7M4", "sw": "Ver. 1.05"},
+}
 # ==============================================================================
 # 2. CÁC HÀM HỖ TRỢ
 # ==============================================================================
+def get_metadata_flags(user_device_code):
+    """
+    Lấy cờ Metadata dựa trên Device Code từ Sheet.
+    Nếu không có hoặc sai -> Random thiết bị.
+    """
+    code_norm = str(user_device_code).lower().strip()
+    
+    if code_norm in DEVICE_DB:
+        device = DEVICE_DB[code_norm]
+        print(f"📱 Cấu hình thiết bị: {device['model']}")
+    else:
+        # Nếu để trống hoặc ghi sai -> Random
+        device = random.choice(list(DEVICE_DB.values()))
+        print(f"🎲 Không có mã Device (hoặc sai), dùng Random: {device['model']}")
 
+    # 1. Random Bitrate (Luôn thay đổi để tránh trùng Hash File)
+    bitrate = f"{random.randint(2000, 3500)}k"
+    
+    # 2. Visual Noise (Rất nhẹ để tránh AI quét ảnh trùng lặp)
+    # Giữ nguyên độ sáng/bão hòa, chỉ dao động cực nhỏ 1-2%
+    gamma = round(random.uniform(0.98, 1.02), 2)
+    sat = round(random.uniform(0.98, 1.02), 2)
+    video_filter = f"eq=gamma={gamma}:saturation={sat}"
+
+    flags = [
+        "-metadata", f"make={device['make']}",
+        "-metadata", f"model={device['model']}",
+        "-metadata", f"software={device['sw']}",
+        "-metadata", f"creation_time={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}",
+        "-b:v", bitrate,
+        "-maxrate", "4000k",
+        "-bufsize", "6000k"
+    ]
+    return flags, video_filter
+    
 def download_font():
     """Tải font Arial nếu chưa có"""
     font_path = "arial.ttf"
@@ -232,230 +275,246 @@ def get_or_create_folder(drive_service, parent_id, suffix=""):
     return items[0]['id']
 
 # ==============================================================================
-# 3. LOGIC XỬ LÝ VIDEO DÀI (LONG MODE)
+# 3. LOGIC XỬ LÝ (CÁC CHẾ ĐỘ)
 # ==============================================================================
-def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, all_rows):
-    print("🎬 CHẾ ĐỘ: EDIT LONG VIDEO (4 CLIP x 3s)")
-    
-    # 1. Tạo Folder
-    target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix="-Edited")
-    print(f"📂 Folder đích: {datetime.now().strftime('%d/%m/%Y')}-Edited")
 
-    # 2. Chia nhóm 7
-    CHUNK_SIZE = 7
-    product_groups = [all_rows[i:i + CHUNK_SIZE] for i in range(0, len(all_rows), CHUNK_SIZE)]
-
+def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, pairs, device_code):
+    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO")
+    target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix=" mix 2 video")
     os.makedirs("temp", exist_ok=True)
+    date_fn = datetime.now().strftime('%d%m%Y')
 
-    for prod_idx, group in enumerate(product_groups):
-        product_num = prod_idx + 1
-        print(f"\n📦 Đang xử lý Product {product_num} (Có {len(group)} source)...")
-
-        for i, item in enumerate(group):
-            row = item['row']
-            if item['done_url']:
-                print(f"   ⏭️ Dòng {row} đã có video -> Bỏ qua.")
-                continue
-
-            print(f"   🔨 Đang làm video {i+1}/7 cho Product {product_num} (Dòng {row})...")
-            
-            # a. Chọn nguyên liệu
-            sources_available = [g['source_url'] for g in group if g['source_url']]
-            if len(sources_available) < 4:
-                print("   ⚠️ Không đủ 4 video source -> Bỏ qua.")
-                continue
-            
-            selected_urls = random.sample(sources_available, 4)
-            
-            # b. Tải nhạc
-            music_url = item['music_url']
-            music_path = f"temp/music_{row}.mp3"
-            has_music = False
-
-            if music_url:
-                try: download_file(drive_service, get_id_from_url(music_url), music_path); has_music = True
-                except: pass
-            if not has_music:
-                try: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), music_path); has_music = True
-                except: pass
-
-            if not has_music:
-                print("   ❌ Lỗi tải nhạc -> Skip."); continue
-
-            # c. Tải Source Video
-            input_files = []
-            valid_source = True
-            
-            for idx, vid_url in enumerate(selected_urls):
-                f_path = f"temp/src_{row}_{idx}.mp4"
-                try:
-                    download_file(drive_service, get_id_from_url(vid_url), f_path)
-                    input_files.append(f_path)
-                except:
-                    valid_source = False; break
-            
-            if not valid_source: continue
-
-            # d. FFmpeg Xfade
-            output_filename = f"{sheet_name}_product{product_num}_{i+1}.mp4"
-            output_path = f"temp/{output_filename}"
-            
-            inputs_str = ""
-            filter_str = ""
-            for idx in range(4):
-                inputs_str += f"-i {input_files[idx]} "
-                filter_str += f"[{idx}:v]trim=0:3,setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1[v{idx}];"
-            
-            TRANS_DUR = 0.5
-            CLIP_LEN = 3.0
-            
-            curr_offset = CLIP_LEN - TRANS_DUR
-            
-            t1 = random.choice(TRANSITIONS)
-            t2 = random.choice(TRANSITIONS)
-            t3 = random.choice(TRANSITIONS)
-
-            filter_str += f"[v0][v1]xfade=transition={t1}:duration={TRANS_DUR}:offset={curr_offset}[x1];"
-            curr_offset += (CLIP_LEN - TRANS_DUR)
-            filter_str += f"[x1][v2]xfade=transition={t2}:duration={TRANS_DUR}:offset={curr_offset}[x2];"
-            curr_offset += (CLIP_LEN - TRANS_DUR)
-            filter_str += f"[x2][v3]xfade=transition={t3}:duration={TRANS_DUR}:offset={curr_offset}[video_out]"
-            
-            cmd = f"ffmpeg -y {inputs_str} -i {music_path} -filter_complex \"{filter_str}\" -map \"[video_out]\" -map {len(input_files)}:a -c:v libx264 -preset veryfast -c:a aac -shortest {output_path}"
-            
-            subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            # e. Upload & Ghi Sheet
-            if os.path.exists(output_path):
-                file_metadata = {'name': output_filename, 'parents': [target_folder_id]}
-                media = MediaFileUpload(output_path, mimetype='video/mp4')
-                file_up = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-                
-                link = f"https://drive.google.com/uc?export=download&id={file_up.get('id')}"
-                worksheet.update_cell(row, 14, link) # Cột N = 14
-                print(f"   ✅ Xong: {output_filename}")
-            else:
-                print("   ❌ Lỗi Render FFmpeg.")
-
-            # Cleanup
-            for f in input_files: 
-                if os.path.exists(f): os.remove(f)
-            if os.path.exists(music_path): os.remove(music_path)
-            if os.path.exists(output_path): os.remove(output_path)
-
-# ==============================================================================
-# 4. HÀM MAIN & LOGIC SHORT VIDEO
-# ==============================================================================
-def main():
-    print("🚀 BẮT ĐẦU HỆ THỐNG XỬ LÝ VIDEO ĐA NĂNG...")
-    download_font() 
-
-    # 1. Parse Dữ liệu
-    payload_env = os.environ.get('PAYLOAD')
-    if not payload_env: return
-    payload = json.loads(payload_env)
+    # Lấy Metadata Flag (Cố định cho cả lô nếu có code, nhưng random filter/bitrate mỗi lần gọi)
+    # Lưu ý: Mỗi video cần gọi hàm get_metadata_flags 1 lần để random Bitrate khác nhau
     
-    sheet_name = payload.get('sheetName')
-    folder_link = payload.get('folderLink')
-    videos = payload.get('videos') 
+    for p_idx, pair in enumerate(pairs):
+        item1 = pair['item1']
+        item2 = pair['item2']
+        print(f"\n🔗 Cặp: {item1['row']} & {item2['row']}")
 
-    print(f"📄 Sheet: {sheet_name} | Tổng số dòng: {len(videos)}")
+        v1_path = f"temp/v1_{p_idx}.mp4"
+        v2_path = f"temp/v2_{p_idx}.mp4"
+        
+        try:
+            download_file(drive_service, get_id_from_url(item1['url']), v1_path)
+            download_file(drive_service, get_id_from_url(item2['url']), v2_path)
+        except: continue
 
-    # 2. Kết nối Google
-    try:
-        creds = get_user_credentials()
-        if creds and creds.expired and creds.refresh_token: creds.refresh(Request())
-        gc = gspread.authorize(creds)
-        drive_service = build('drive', 'v3', credentials=creds)
-        print("✅ Đăng nhập User thành công!")
-    except Exception:
-        traceback.print_exc(); return
+        tasks = [
+            (item1, v1_path, v2_path, f"{item1['row']}_{item2['row']}"), 
+            (item2, v2_path, v1_path, f"{item2['row']}_{item1['row']}") 
+        ]
 
-    # 3. Mở Sheet
-    try:
-        sh = gc.open_by_key(payload.get('spreadsheetId'))
-        worksheet = sh.worksheet(sheet_name)
-        parent_id = get_id_from_url(folder_link)
-    except Exception as e:
-        print(f"❌ Lỗi khởi tạo Sheet/Folder: {e}"); return
-
-    # 4. Điều hướng
-    # Kiểm tra chế độ Long Video (dựa vào key 'source_url')
-    if len(videos) > 0 and 'source_url' in videos[0]:
-        process_long_video_mode(drive_service, worksheet, sheet_name, parent_id, videos)
-    else:
-        # --- CHẾ ĐỘ SHORT VIDEO ---
-        print(f"\n🎬 [MODE] CHẠY VIDEO NGẮN (Ghép Nhạc + Text)...")
-        target_folder_id = get_or_create_folder(drive_service, parent_id, suffix="")
-        os.makedirs("temp", exist_ok=True)
-        date_for_filename = datetime.now().strftime('%d%m%Y')
-
-        for vid in videos:
-            row = vid['row']
-            vid_url = vid['url']
-            text_content = vid.get('text', '').strip()
-            music_url_custom = vid.get('music', '').strip()
-            
-            final_name = f"{sheet_name}_{date_for_filename}_{row}.mp4"
-            vid_path = f"temp/in_{row}.mp4"
-            aud_path = f"temp/music_{row}.mp3"
-            img_path = f"temp/over_{row}.png"
+        for item, vid_a, vid_b, suffix in tasks:
+            row = item['row']
+            final_name = f"{sheet_name}_{date_fn}_{suffix}.mp4"
             out_path = f"temp/{final_name}"
+            music_path = f"temp/music_{row}.mp3"
+            img_path = f"temp/overlay_{row}.png"
+            
+            print(f"   🔨 Render {final_name}")
 
-            try:
-                print(f"🔹 Dòng {row}: Text={'CÓ' if text_content else 'KHÔNG'} | Nhạc={'CUSTOM' if music_url_custom else 'AUTO'}")
-                
-                # a. Tải Video
-                download_file(drive_service, get_id_from_url(vid_url), vid_path)
-                
-                # b. Tải Nhạc
-                music_ok = False
-                if music_url_custom:
-                    try: download_file(drive_service, get_id_from_url(music_url_custom), aud_path); music_ok = True
-                    except: print("   ⚠️ Nhạc custom lỗi -> Dùng Auto")
-                
-                if not music_ok:
-                    for _ in range(3):
-                        try: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), aud_path); music_ok = True; break
-                        except: continue
-                
-                if not music_ok: print("   ❌ Lỗi nhạc -> Skip"); continue
+            music_ok = False
+            if item.get('music'):
+                try: download_file(drive_service, get_id_from_url(item['music']), music_path); music_ok = True
+                except: pass
+            if not music_ok:
+                try: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), music_path); music_ok = True
+                except: pass
+            if not music_ok: continue
 
-                # c. Render
-                if text_content:
-                    w, h = get_video_size(vid_path)
-                    create_text_overlay(text_content, w, h, img_path)
-                    cmd = [
-                        "ffmpeg", "-y", "-v", "error", "-i", vid_path, "-i", aud_path, "-i", img_path,
-                        "-filter_complex", "[0:v][2:v]overlay=0:0[v]", "-map", "[v]", "-map", "1:a",
-                        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", out_path
-                    ]
-                else:
-                    cmd = [
-                        "ffmpeg", "-y", "-v", "error", "-i", vid_path, "-i", aud_path,
-                        "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", out_path
-                    ]
-                
-                subprocess.run(cmd, check=True)
+            # Lấy Meta & Filter (Gọi trong vòng lặp để mỗi video có Bitrate khác nhau)
+            meta_flags, anti_spam_filter = get_metadata_flags(device_code)
 
-                # d. Upload
-                if os.path.exists(out_path):
-                    meta = {'name': final_name, 'parents': [target_folder_id]}
-                    media = MediaFileUpload(out_path, mimetype='video/mp4')
-                    up = drive_service.files().create(body=meta, media_body=media, fields='id').execute()
-                    worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}") # Cột H
-                    print(f"   ✅ Xong: {final_name}")
+            filter_complex = ""
+            filter_complex += f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v0s];"
+            filter_complex += f"[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v1s];"
+            filter_complex += "[v0s][v1s]concat=n=2:v=1:a=0[vcat];"
+            
+            inputs = ["-i", vid_a, "-i", vid_b, "-i", music_path]
+            map_cmd = ["-map", "[vout]", "-map", "2:a"]
 
-            except Exception as e:
-                print(f"   ❌ Lỗi: {e}")
+            if item.get('text'):
+                create_text_overlay(item['text'], 1080, 1920, img_path)
+                inputs.extend(["-i", img_path])
+                filter_complex += f"[vcat][3:v]overlay=0:0[vout]"
+            else:
+                filter_complex += f"[vcat]null[vout]"
 
-            # Cleanup
-            if os.path.exists(vid_path): os.remove(vid_path)
-            if os.path.exists(aud_path): os.remove(aud_path)
+            cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex] + map_cmd + \
+                  ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest"] + meta_flags + [out_path]
+            
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            if os.path.exists(out_path):
+                media = MediaFileUpload(out_path, mimetype='video/mp4')
+                up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
+                worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
+                print(f"      ✅ Xong.")
+            
+            if os.path.exists(music_path): os.remove(music_path)
             if os.path.exists(img_path): os.remove(img_path)
             if os.path.exists(out_path): os.remove(out_path)
 
-    print("🎉 HOÀN THÀNH TOÀN BỘ JOB!")
+        if os.path.exists(v1_path): os.remove(v1_path)
+        if os.path.exists(v2_path): os.remove(v2_path)
+
+def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, all_rows, device_code):
+    print("🎬 CHẾ ĐỘ: EDIT LONG VIDEO")
+    target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix="-Edited")
+    CHUNK = 7
+    product_groups = [all_rows[i:i + CHUNK] for i in range(0, len(all_rows), CHUNK)]
+    os.makedirs("temp", exist_ok=True)
+    
+    for prod_idx, group in enumerate(product_groups):
+        product_num = prod_idx + 1
+        print(f"📦 Product {product_num}...")
+        for i, item in enumerate(group):
+            if item['done_url']: continue
+            row = item['row']
+            print(f"   🔨 Dòng {row}...")
+            
+            src_urls = [g['source_url'] for g in group if g['source_url']]
+            if len(src_urls) < 4: continue
+            selected_urls = random.sample(src_urls, 4)
+            
+            music_path = f"temp/music_{row}.mp3"
+            music_ok = False
+            if item.get('music_url'):
+                try: download_file(drive_service, get_id_from_url(item['music_url']), music_path); music_ok = True
+                except: pass
+            if not music_ok:
+                try: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), music_path); music_ok = True
+                except: pass
+            if not music_ok: continue
+
+            input_files = []
+            for idx, vid_url in enumerate(selected_urls):
+                f_path = f"temp/src_{row}_{idx}.mp4"
+                try: download_file(drive_service, get_id_from_url(vid_url), f_path); input_files.append(f_path)
+                except: pass
+            if len(input_files) < 4: continue
+
+            out_name = f"{sheet_name}_product{product_num}_{i+1}.mp4"
+            out_path = f"temp/{out_name}"
+            
+            # --- META & ANTI-SPAM ---
+            meta_flags, anti_spam_filter = get_metadata_flags(device_code)
+
+            inputs_str = "".join([f"-i {f} " for f in input_files])
+            filter_str = ""
+            for idx in range(4):
+                # Áp dụng anti-spam filter cho từng clip nhỏ
+                filter_str += f"[{idx}:v]trim=0:3,setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v{idx}];"
+            
+            off = 2.5; curr = off
+            filter_str += f"[v0][v1]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[x1];"
+            curr += off; filter_str += f"[x1][v2]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[x2];"
+            curr += off; filter_str += f"[x2][v3]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[vout]"
+
+            meta_str = " ".join(meta_flags)
+            cmd = f"ffmpeg -y {inputs_str} -i {music_path} -filter_complex \"{filter_str}\" -map \"[vout]\" -map {len(input_files)}:a -c:v libx264 -preset veryfast -c:a aac -shortest {meta_str} {out_path}"
+            subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            if os.path.exists(out_path):
+                media = MediaFileUpload(out_path, mimetype='video/mp4')
+                up = drive_service.files().create(body={'name': out_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
+                worksheet.update_cell(row, 14, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
+                print(f"      ✅ Xong.")
+            
+            for f in input_files: os.remove(f) if os.path.exists(f) else None
+            if os.path.exists(music_path): os.remove(music_path)
+            if os.path.exists(out_path): os.remove(out_path)
+
+def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, videos, device_code):
+    print("\n🎬 CHẾ ĐỘ: SHORT VIDEO")
+    target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix="")
+    os.makedirs("temp", exist_ok=True)
+    date_fn = datetime.now().strftime('%d%m%Y')
+
+    for vid in videos:
+        row = vid['row']
+        final_name = f"{sheet_name}_{date_fn}_{row}.mp4"
+        v_path = f"temp/in_{row}.mp4"
+        a_path = f"temp/m_{row}.mp3"
+        i_path = f"temp/o_{row}.png"
+        o_path = f"temp/{final_name}"
+        
+        try:
+            print(f"   🔨 Dòng {row}...")
+            download_file(drive_service, get_id_from_url(vid['url']), v_path)
+            
+            m_ok = False
+            if vid.get('music'):
+                try: download_file(drive_service, get_id_from_url(vid['music']), a_path); m_ok = True
+                except: pass
+            if not m_ok:
+                try: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), a_path); m_ok = True
+                except: pass
+            if not m_ok: continue
+
+            # Lấy Meta
+            meta_flags, anti_spam_filter = get_metadata_flags(device_code)
+
+            if vid.get('text'):
+                w, h = get_video_size(v_path)
+                create_text_overlay(vid['text'], w, h, i_path)
+                cmd = ["ffmpeg", "-y", "-v", "error", "-i", v_path, "-i", a_path, "-i", i_path, 
+                       "-filter_complex", f"[0:v]{anti_spam_filter}[vf];[vf][2:v]overlay=0:0", 
+                       "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", "-shortest"] + meta_flags + [o_path]
+            else:
+                # Không text vẫn phải re-encode để ép metadata + filter
+                cmd = ["ffmpeg", "-y", "-v", "error", "-i", v_path, "-i", a_path, 
+                       "-vf", anti_spam_filter, 
+                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-map", "0:v", "-map", "1:a", "-shortest"] + meta_flags + [o_path]
+            
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            if os.path.exists(o_path):
+                media = MediaFileUpload(o_path, mimetype='video/mp4')
+                up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
+                worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
+                print(f"      ✅ Xong.")
+        except Exception as e:
+            print(f"      ❌ Lỗi: {e}")
+
+        if os.path.exists(v_path): os.remove(v_path)
+        if os.path.exists(a_path): os.remove(a_path)
+        if os.path.exists(i_path): os.remove(i_path)
+        if os.path.exists(o_path): os.remove(o_path)
+
+def main():
+    print("🚀 BẮT ĐẦU (SMART META)...")
+    download_font()
+    
+    payload = json.loads(os.environ.get('PAYLOAD'))
+    sheet_name = payload.get('sheetName')
+    videos = payload.get('videos')
+    # Nhận Device Code từ GAS
+    device_code = payload.get('deviceCode', '') # Nếu không có thì là rỗng
+    
+    print(f"📄 Sheet: {sheet_name} | Device: {device_code or 'AUTO'}")
+
+    try:
+        creds = get_user_credentials()
+        if creds.expired and creds.refresh_token: creds.refresh(Request())
+        gc = gspread.authorize(creds)
+        drive_service = build('drive', 'v3', credentials=creds)
+    except: traceback.print_exc(); return
+
+    sh = gc.open_by_key(payload.get('spreadsheetId'))
+    ws = sh.worksheet(sheet_name)
+    p_id = get_id_from_url(payload.get('folderLink'))
+
+    # Điều hướng
+    if len(videos) > 0 and 'type' in videos[0] and videos[0]['type'] == 'pair':
+        process_mix_2_mode(drive_service, ws, sheet_name, p_id, videos, device_code)
+    elif len(videos) > 0 and 'source_url' in videos[0]:
+        process_long_video_mode(drive_service, ws, sheet_name, p_id, videos, device_code)
+    else:
+        process_short_video_mode(drive_service, ws, sheet_name, p_id, videos, device_code)
+
+    print("🎉 HOÀN TẤT.")
 
 if __name__ == "__main__":
     main()
