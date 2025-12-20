@@ -50,30 +50,9 @@ def get_device_info(user_input):
         device = random.choice(list(DEVICE_DB.values()))
     return device
 
-def get_encoding_flags(device):
+def get_full_flags(device):
     """
-    Cờ cho BƯỚC 1 (Render hình ảnh):
-    - Đã loại bỏ h264_metadata gây crash
-    """
-    bitrate = f"{random.randint(3000, 5000)}k"
-    
-    # Visual Noise nhẹ
-    gamma = round(random.uniform(0.98, 1.02), 2)
-    sat = round(random.uniform(0.98, 1.02), 2)
-    video_filter = f"eq=gamma={gamma}:saturation={sat}"
-
-    flags = [
-        "-b:v", bitrate, 
-        "-maxrate", "6000k", 
-        "-bufsize", "12000k",
-        "-pix_fmt", "yuv420p",
-        "-x264-params", "no-info=1", # Chỉ giữ lại cái này là đủ ẩn Lavf
-    ]
-    return flags, video_filter
-
-def get_container_flags(device):
-    """
-    Cờ cho BƯỚC 2 (Muxing/Container):
+    Tổng hợp tất cả cờ (Encoding + Metadata) cho chế độ Render 1 Bước
     """
     make = device.get("make", "Apple")
     model = device.get("model", "iPhone")
@@ -81,6 +60,13 @@ def get_container_flags(device):
     encoder_fake = device.get("encoder", "iOS 16.0")
     vendor_id = device.get("vendor", "appl")
     creation_time = get_random_past_time()
+    
+    bitrate = f"{random.randint(3500, 5500)}k"
+    
+    # Anti-Spam Visual Filter
+    gamma = round(random.uniform(0.98, 1.02), 2)
+    sat = round(random.uniform(0.98, 1.02), 2)
+    video_filter = f"eq=gamma={gamma}:saturation={sat}"
 
     flags = [
         "-map_metadata", "-1",
@@ -93,9 +79,15 @@ def get_container_flags(device):
         "-metadata:s:v:0", "handler_name=Core Media Video",
         "-metadata:s:a:0", "handler_name=Core Media Audio",
         "-vendor", vendor_id,
-        "-movflags", "+faststart"
+        "-b:v", bitrate, 
+        "-maxrate", "6000k", 
+        "-bufsize", "12000k",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        # Các cờ ẩn danh nâng cao (Đã test ổn định)
+        "-x264-params", "no-info=1",
     ]
-    return flags
+    return flags, video_filter
 
 def download_font():
     if not os.path.exists("arial.ttf"):
@@ -167,10 +159,10 @@ def get_or_create_folder(drive_service, parent_id, suffix=""):
     return items[0]['id']
 
 # ==============================================================================
-# 3. LOGIC XỬ LÝ MIX 2 VIDEO (BẢN FIX LỖI)
+# 3. LOGIC XỬ LÝ MIX 2 VIDEO (SINGLE PASS - GIỐNG LONG VIDEO)
 # ==============================================================================
 def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, pairs, device_code):
-    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (DEBUG MODE ON)")
+    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (SINGLE PASS + XFADE)")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix=" mix 2 video")
     os.makedirs("temp", exist_ok=True)
     date_fn = datetime.now().strftime('%d%m%Y')
@@ -189,9 +181,9 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             download_file(drive_service, get_id_from_url(item2['url']), v2_path)
         except: continue
 
-        # Check file size
+        # Kiểm tra file
         if os.path.getsize(v1_path) < 1000 or os.path.getsize(v2_path) < 1000:
-            print("      ❌ File video nguồn quá nhỏ hoặc lỗi tải.")
+            print("      ❌ File video nguồn lỗi/quá nhỏ.")
             continue
 
         dur1 = get_video_duration(v1_path)
@@ -205,16 +197,13 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
         for item, vid_a, vid_b, d_a, d_b, suffix in tasks:
             row = item['row']
             final_name = f"{sheet_name}_{date_fn}_{suffix}.mp4"
-            
-            temp_video_only = f"temp/video_only_{suffix}.mp4"
-            final_output = f"temp/{final_name}"
-            
+            out_path = f"temp/{final_name}"
             music_path = f"temp/music_{row}.mp3"
             img_path = f"temp/overlay_{row}.png"
             
             print(f"   🔨 Dòng {row}: Đang Render...")
 
-            # --- TẢI NHẠC ---
+            # Tải Nhạc
             music_ok = False
             if item.get('music'):
                 try: download_file(drive_service, get_id_from_url(item['music']), music_path); music_ok = True
@@ -224,80 +213,64 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                 except: pass
             if not music_ok: continue
 
-            # --- LẤY FLAGS ---
+            # Lấy thông số
             device = get_device_info(device_code)
-            encoding_flags, anti_spam_filter = get_encoding_flags(device) 
-            container_flags = get_container_flags(device)
-            
+            full_flags, anti_spam_filter = get_full_flags(device)
             transition = random.choice(TRANSITIONS)
+            
             offset = d_a - 0.5
             if offset < 0: offset = 0
+            
+            # Tính tổng thời gian để cắt (QUAN TRỌNG)
+            total_duration = d_a + d_b - 0.5
 
-            # ---------------------------------------------------------
-            # BƯỚC 1: RENDER HÌNH ẢNH (BỎ QUA LỖI BSF GÂY CRASH)
-            # ---------------------------------------------------------
-            filter_v = ""
-            filter_v += f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v0s];"
-            filter_v += f"[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v1s];"
-            filter_v += f"[v0s][v1s]xfade=transition={transition}:duration=0.5:offset={offset}[v_merged];"
+            # --- FILTER COMPLEX ---
+            filter_str = ""
+            filter_str += f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v0s];"
+            filter_str += f"[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v1s];"
+            filter_str += f"[v0s][v1s]xfade=transition={transition}:duration=0.5:offset={offset}[v_merged];"
             
-            inputs_v = ["-i", vid_a, "-i", vid_b]
+            # --- INPUTS (SINGLE PASS) ---
+            # Lưu ý: -stream_loop -1 phải đặt ngay trước input nhạc
+            inputs = ["-i", vid_a, "-i", vid_b, "-stream_loop", "-1", "-i", music_path]
             
+            # Mapping
+            map_cmd = ["-map", "[vout]", "-map", "2:a"]
+
+            # Overlay
             if item.get('text'):
                 create_text_overlay(item['text'], 1080, 1920, img_path)
-                inputs_v.extend(["-i", img_path])
-                filter_v += f"[v_merged][2:v]overlay=0:0[v_out]"
+                inputs.extend(["-i", img_path])
+                filter_str += f"[v_merged][3:v]overlay=0:0[vout]"
             else:
-                filter_v += f"[v_merged]null[v_out]"
+                filter_str += f"[v_merged]null[vout]"
 
-            # XÓA stderr=subprocess.DEVNULL để hiện lỗi nếu có
-            cmd_step1 = ["ffmpeg", "-y"] + inputs_v + ["-filter_complex", filter_v, "-map", "[v_out]", 
-                         "-c:v", "libx264", "-preset", "veryfast"] + encoding_flags + ["-an", temp_video_only]
+            # --- LỆNH FFmpeg ---
+            # Dùng -t (Total Duration) thay vì -shortest để đảm bảo nhạc không bị ngắt hoặc chạy lố
+            cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_str] + map_cmd + \
+                  ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-t", str(total_duration)] + \
+                  full_flags + [out_path]
             
-            # CHẠY VÀ IN LỖI (QUAN TRỌNG)
-            result = subprocess.run(cmd_step1, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0:
-                print(f"      ❌ FFmpeg Error Step 1:\n{result.stderr[-500:]}") # In 500 ký tự lỗi cuối cùng
-                continue 
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-            # ---------------------------------------------------------
-            # BƯỚC 2: MUX NHẠC
-            # ---------------------------------------------------------
-            if os.path.exists(temp_video_only):
-                cmd_step2 = [
-                    "ffmpeg", "-y",
-                    "-i", temp_video_only,
-                    "-stream_loop", "-1", "-i", music_path,
-                    "-c:v", "copy",       
-                    "-c:a", "aac",        
-                    "-map", "0:v:0",      
-                    "-map", "1:a:0",      
-                    "-shortest"           
-                ] + container_flags + [final_output]
-
-                result2 = subprocess.run(cmd_step2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                
-                if os.path.exists(final_output) and os.path.getsize(final_output) > 1000:
-                    media = MediaFileUpload(final_output, mimetype='video/mp4')
-                    up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
-                    worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
-                    print(f"      ✅ Xong: {final_name}")
-                else: 
-                    print(f"      ❌ Lỗi Muxing Step 2:\n{result2.stderr[-500:]}")
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                media = MediaFileUpload(out_path, mimetype='video/mp4')
+                up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
+                worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
+                print(f"      ✅ Xong ({total_duration}s)")
             else:
-                print("      ❌ File Temp không tồn tại (Step 1 failed silent).")
+                print(f"      ❌ Lỗi Render:\n{result.stderr[-500:]}") # In 500 ký tự lỗi cuối cùng
 
             # Cleanup
             if os.path.exists(music_path): os.remove(music_path)
             if os.path.exists(img_path): os.remove(img_path)
-            if os.path.exists(temp_video_only): os.remove(temp_video_only)
-            if os.path.exists(final_output): os.remove(final_output)
+            if os.path.exists(out_path): os.remove(out_path)
 
         if os.path.exists(v1_path): os.remove(v1_path)
         if os.path.exists(v2_path): os.remove(v2_path)
 
 # ==============================================================================
-# 4. LOGIC KHÁC (GIỮ NGUYÊN)
+# 4. LOGIC LONG VIDEO (ĐÃ ĐỒNG BỘ FLAGS)
 # ==============================================================================
 def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, all_rows, device_code):
     print("🎬 CHẾ ĐỘ: EDIT LONG VIDEO")
@@ -319,14 +292,10 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             selected_urls = random.sample(src_urls, 4)
             
             music_path = f"temp/music_{row}.mp3"
-            music_ok = False
-            if item.get('music_url'):
-                try: download_file(drive_service, get_id_from_url(item['music_url']), music_path); music_ok = True
-                except: pass
-            if not music_ok:
-                try: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), music_path); music_ok = True
-                except: pass
-            if not music_ok: continue
+            try:
+                if item.get('music_url'): download_file(drive_service, get_id_from_url(item['music_url']), music_path)
+                else: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), music_path)
+            except: continue
 
             input_files = []
             for idx, vid_url in enumerate(selected_urls):
@@ -339,13 +308,12 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             out_path = f"temp/{out_name}"
             
             device = get_device_info(device_code)
-            enc_flags, anti_spam = get_encoding_flags(device)
-            cont_flags = get_container_flags(device)
+            full_flags, anti_spam_filter = get_full_flags(device)
 
             inputs_str = "".join([f"-i {f} " for f in input_files])
             filter_str = ""
             for idx in range(4):
-                filter_str += f"[{idx}:v]trim=0:3,setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam}[v{idx}];"
+                filter_str += f"[{idx}:v]trim=0:3,setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v{idx}];"
             
             off = 2.5; curr = off
             filter_str += f"[v0][v1]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[x1];"
@@ -353,8 +321,9 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             curr += off; filter_str += f"[x2][v3]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[vout]"
 
             cmd_inputs = inputs_str.split() + ["-stream_loop", "-1", "-i", music_path]
+            
             cmd = ["ffmpeg", "-y"] + cmd_inputs + ["-filter_complex", filter_str, "-map", "[vout]", "-map", f"{len(input_files)}:a", 
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest"] + enc_flags + cont_flags + [out_path]
+                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest"] + full_flags + [out_path]
             
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -392,19 +361,18 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
             else: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), a_path)
 
             device = get_device_info(device_code)
-            enc_flags, anti_spam = get_encoding_flags(device)
-            cont_flags = get_container_flags(device)
+            full_flags, anti_spam = get_full_flags(device)
 
             if vid.get('text'):
                 w, h = get_video_size(v_path)
                 create_text_overlay(vid['text'], w, h, i_path)
                 cmd = ["ffmpeg", "-y", "-v", "error", "-i", v_path, "-stream_loop", "-1", "-i", a_path, "-i", i_path, 
                        "-filter_complex", f"[0:v]{anti_spam}[vf];[vf][2:v]overlay=0:0", 
-                       "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", "-shortest"] + enc_flags + cont_flags + [o_path]
+                       "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", "-shortest"] + full_flags + [o_path]
             else:
                 cmd = ["ffmpeg", "-y", "-v", "error", "-i", v_path, "-stream_loop", "-1", "-i", a_path, 
                        "-vf", anti_spam, 
-                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-map", "0:v", "-map", "1:a", "-shortest"] + enc_flags + cont_flags + [o_path]
+                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-map", "0:v", "-map", "1:a", "-shortest"] + full_flags + [o_path]
             
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
@@ -422,7 +390,7 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
         if os.path.exists(o_path): os.remove(o_path)
 
 def main():
-    print("🚀 BẮT ĐẦU (FINAL DEBUG FIX)...")
+    print("🚀 BẮT ĐẦU (SINGLE PASS UNIFIED)...")
     download_font()
     
     payload = json.loads(os.environ.get('PAYLOAD'))
