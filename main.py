@@ -28,7 +28,7 @@ except ImportError:
     DEVICE_DB = {"ip14": {"make": "Apple", "model": "iPhone 14", "sw": "16.0", "encoder": "iOS 16.0", "vendor": "appl"}}
 
 # ==============================================================================
-# CÁC HÀM HỖ TRỢ
+# HELPER FUNCTIONS
 # ==============================================================================
 
 def get_random_past_time():
@@ -51,7 +51,10 @@ def get_device_info(user_input):
     return device
 
 def get_ffmpeg_flags(device):
-    """Cờ FFmpeg cho chế độ Render 1 Lần (Single Pass)"""
+    """
+    Cờ FFmpeg Metadata cơ bản + Anti-Spam Visual
+    Đã bỏ các cờ gây crash (x264-params)
+    """
     make = device.get("make", "Apple")
     model = device.get("model", "iPhone")
     sw = device.get("sw", "iOS")
@@ -61,6 +64,7 @@ def get_ffmpeg_flags(device):
     
     bitrate = f"{random.randint(3500, 5500)}k"
     
+    # Anti-Spam Visual (Đổi màu nhẹ)
     gamma = round(random.uniform(0.98, 1.02), 2)
     sat = round(random.uniform(0.98, 1.02), 2)
     video_filter = f"eq=gamma={gamma}:saturation={sat}"
@@ -80,8 +84,7 @@ def get_ffmpeg_flags(device):
         "-maxrate", "6000k", 
         "-bufsize", "12000k",
         "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-x264-params", "no-info=1",
+        "-movflags", "+faststart"
     ]
     return flags, video_filter
 
@@ -158,7 +161,7 @@ def get_or_create_folder(drive_service, parent_id, suffix=""):
 # MODE 1: MIX 2 VIDEO (FIXED SINGLE PASS)
 # ==============================================================================
 def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, pairs, device_code):
-    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (FIXED SINGLE PASS)")
+    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (STABLE)")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix=" mix 2 video")
     os.makedirs("temp", exist_ok=True)
     date_fn = datetime.now().strftime('%d%m%Y')
@@ -176,7 +179,6 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             download_file(drive_service, get_id_from_url(item2['url']), v2_path)
         except: continue
 
-        # Lấy thời lượng để tính toán cắt nhạc
         dur1 = get_video_duration(v1_path)
         dur2 = get_video_duration(v2_path)
         print(f"   ⏱️ Info: Clip1={dur1}s, Clip2={dur2}s")
@@ -213,7 +215,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             offset = d_a - 0.5
             if offset < 0: offset = 0
             
-            # Tính Tổng thời lượng (để cắt nhạc chuẩn)
+            # Tính Total Duration để cắt chuẩn
             total_duration = d_a + d_b - 0.5
 
             # --- FILTER COMPLEX ---
@@ -229,10 +231,10 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             # QUAN TRỌNG: -stream_loop -1 để nhạc không bao giờ hết trước video
             inputs = ["-i", vid_a, "-i", vid_b, "-stream_loop", "-1", "-i", music_path]
             
-            # 4. Map
+            # 4. Map Audio (Lấy nhạc làm tiếng chính)
             map_cmd = ["-map", "[vout]", "-map", "2:a"]
 
-            # 5. Overlay
+            # 5. Overlay Text
             if item.get('text'):
                 create_text_overlay(item['text'], 1080, 1920, img_path)
                 inputs.extend(["-i", img_path])
@@ -246,7 +248,8 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                   ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-t", str(total_duration)] + \
                   ffmpeg_flags + [out_path]
             
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Capture error output
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
                 media = MediaFileUpload(out_path, mimetype='video/mp4')
@@ -254,7 +257,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                 worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
                 print(f"      ✅ Xong ({total_duration}s)")
             else:
-                print(f"      ❌ Lỗi Render (File rỗng)")
+                print(f"      ❌ Lỗi Render (File rỗng): {result.stderr[-200:]}") # In 200 ký tự lỗi cuối cùng
 
             # Cleanup
             if os.path.exists(music_path): os.remove(music_path)
@@ -321,11 +324,13 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            if os.path.exists(out_path):
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
                 media = MediaFileUpload(out_path, mimetype='video/mp4')
                 up = drive_service.files().create(body={'name': out_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
-                worksheet.update_cell(row, 14, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
+                worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}") # Update Column H (8)
                 print(f"      ✅ Xong.")
+            else:
+                print(f"      ❌ Lỗi Render (File rỗng)")
             
             for f in input_files: os.remove(f) if os.path.exists(f) else None
             if os.path.exists(music_path): os.remove(music_path)
@@ -371,13 +376,15 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
                        "-vf", anti_spam, 
                        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-map", "0:v", "-map", "1:a", "-shortest"] + ffmpeg_flags + [o_path]
             
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             
-            if os.path.exists(o_path):
+            if os.path.exists(o_path) and os.path.getsize(o_path) > 1000:
                 media = MediaFileUpload(o_path, mimetype='video/mp4')
                 up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
                 worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
                 print(f"      ✅ Xong.")
+            else:
+                print(f"      ❌ Lỗi: {result.stderr[-200:]}")
         except Exception as e:
             print(f"      ❌ Lỗi: {e}")
 
