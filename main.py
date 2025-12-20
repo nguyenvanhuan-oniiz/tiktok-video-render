@@ -28,7 +28,7 @@ except ImportError:
     DEVICE_DB = {"ip14": {"make": "Apple", "model": "iPhone 14", "sw": "16.0", "encoder": "iOS 16.0", "vendor": "appl"}}
 
 # ==============================================================================
-# 2. CÁC HÀM HỖ TRỢ
+# CÁC HÀM HỖ TRỢ
 # ==============================================================================
 
 def get_random_past_time():
@@ -38,7 +38,6 @@ def get_random_past_time():
     return past_time.strftime('%Y-%m-%dT%H:%M:%S')
 
 def get_device_info(user_input):
-    """Lấy thông tin thiết bị từ mã hoặc random"""
     user_input = str(user_input).strip()
     device = None
     if user_input.startswith("{"):
@@ -53,12 +52,12 @@ def get_device_info(user_input):
 
 def get_encoding_flags(device):
     """
-    Cờ dùng cho bước RENDER VIDEO (Bước 1):
-    - Chứa Bitrate, Preset, x264-params (để ẩn Lavf), Pixel Format
+    Cờ cho BƯỚC 1 (Render hình ảnh):
+    - Đã loại bỏ h264_metadata gây crash
     """
     bitrate = f"{random.randint(3000, 5000)}k"
     
-    # Anti-Spam Visual Filter
+    # Visual Noise nhẹ
     gamma = round(random.uniform(0.98, 1.02), 2)
     sat = round(random.uniform(0.98, 1.02), 2)
     video_filter = f"eq=gamma={gamma}:saturation={sat}"
@@ -67,17 +66,14 @@ def get_encoding_flags(device):
         "-b:v", bitrate, 
         "-maxrate", "6000k", 
         "-bufsize", "12000k",
-        "-pix_fmt", "yuv420p", # Quan trọng cho iPhone
-        "-x264-params", "no-info=1", # Ẩn info encoder
-        "-bsf:v", "h264_metadata=sei_user_data=''" # Xóa user data
+        "-pix_fmt", "yuv420p",
+        "-x264-params", "no-info=1", # Chỉ giữ lại cái này là đủ ẩn Lavf
     ]
     return flags, video_filter
 
 def get_container_flags(device):
     """
-    Cờ dùng cho bước GHÉP NHẠC/CONTAINER (Bước 2):
-    - Chỉ chứa Metadata text (Model, Make, Time...)
-    - KHÔNG chứa bitrate hay thông số encoding (vì đang copy)
+    Cờ cho BƯỚC 2 (Muxing/Container):
     """
     make = device.get("make", "Apple")
     model = device.get("model", "iPhone")
@@ -87,7 +83,7 @@ def get_container_flags(device):
     creation_time = get_random_past_time()
 
     flags = [
-        "-map_metadata", "-1", # Xóa meta cũ
+        "-map_metadata", "-1",
         "-metadata", f"creation_time={creation_time}",
         "-metadata", "language=vie",
         "-metadata", f"make={make}",
@@ -171,10 +167,10 @@ def get_or_create_folder(drive_service, parent_id, suffix=""):
     return items[0]['id']
 
 # ==============================================================================
-# 3. LOGIC XỬ LÝ MIX 2 VIDEO (RENDER 2 BƯỚC - FIXED)
+# 3. LOGIC XỬ LÝ MIX 2 VIDEO (BẢN FIX LỖI)
 # ==============================================================================
 def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, pairs, device_code):
-    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (RENDER 2 BƯỚC + FIX LỖI RỖNG FILE)")
+    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (DEBUG MODE ON)")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix=" mix 2 video")
     os.makedirs("temp", exist_ok=True)
     date_fn = datetime.now().strftime('%d%m%Y')
@@ -187,10 +183,16 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
         v1_path = f"temp/v1_{p_idx}.mp4"
         v2_path = f"temp/v2_{p_idx}.mp4"
         
+        # Tải Video
         try:
             download_file(drive_service, get_id_from_url(item1['url']), v1_path)
             download_file(drive_service, get_id_from_url(item2['url']), v2_path)
         except: continue
+
+        # Check file size
+        if os.path.getsize(v1_path) < 1000 or os.path.getsize(v2_path) < 1000:
+            print("      ❌ File video nguồn quá nhỏ hoặc lỗi tải.")
+            continue
 
         dur1 = get_video_duration(v1_path)
         dur2 = get_video_duration(v2_path)
@@ -222,19 +224,17 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                 except: pass
             if not music_ok: continue
 
-            # --- LẤY THÔNG TIN THIẾT BỊ ---
+            # --- LẤY FLAGS ---
             device = get_device_info(device_code)
-            
-            # --- LẤY CỜ RIÊNG BIỆT ---
-            encoding_flags, anti_spam_filter = get_encoding_flags(device) # Cho bước 1
-            container_flags = get_container_flags(device) # Cho bước 2
+            encoding_flags, anti_spam_filter = get_encoding_flags(device) 
+            container_flags = get_container_flags(device)
             
             transition = random.choice(TRANSITIONS)
             offset = d_a - 0.5
             if offset < 0: offset = 0
 
             # ---------------------------------------------------------
-            # BƯỚC 1: RENDER HÌNH ẢNH (Dùng Encoding Flags)
+            # BƯỚC 1: RENDER HÌNH ẢNH (BỎ QUA LỖI BSF GÂY CRASH)
             # ---------------------------------------------------------
             filter_v = ""
             filter_v += f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v0s];"
@@ -250,42 +250,42 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             else:
                 filter_v += f"[v_merged]null[v_out]"
 
-            # Áp dụng encoding_flags (-b:v, -x264-params...) ở đây vì ta đang re-encode
+            # XÓA stderr=subprocess.DEVNULL để hiện lỗi nếu có
             cmd_step1 = ["ffmpeg", "-y"] + inputs_v + ["-filter_complex", filter_v, "-map", "[v_out]", 
                          "-c:v", "libx264", "-preset", "veryfast"] + encoding_flags + ["-an", temp_video_only]
             
-            subprocess.run(cmd_step1, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # CHẠY VÀ IN LỖI (QUAN TRỌNG)
+            result = subprocess.run(cmd_step1, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if result.returncode != 0:
+                print(f"      ❌ FFmpeg Error Step 1:\n{result.stderr[-500:]}") # In 500 ký tự lỗi cuối cùng
+                continue 
 
             # ---------------------------------------------------------
-            # BƯỚC 2: MUX NHẠC (Dùng Container Flags)
+            # BƯỚC 2: MUX NHẠC
             # ---------------------------------------------------------
             if os.path.exists(temp_video_only):
-                # Lưu ý: Ở bước này dùng -c:v copy nên KHÔNG ĐƯỢC CÓ flag encoding (bitrate, x264...)
-                # Chỉ dùng container_flags (metadata)
-                
                 cmd_step2 = [
                     "ffmpeg", "-y",
                     "-i", temp_video_only,
                     "-stream_loop", "-1", "-i", music_path,
-                    "-c:v", "copy",       # Copy video stream từ B1
-                    "-c:a", "aac",        # Encode nhạc
-                    "-map", "0:v:0",      # Lấy hình
-                    "-map", "1:a:0",      # Lấy tiếng
-                    "-shortest"           # Cắt khi video hết
-                ] + container_flags + [final_output] # Chỉ thêm Metadata tags
+                    "-c:v", "copy",       
+                    "-c:a", "aac",        
+                    "-map", "0:v:0",      
+                    "-map", "1:a:0",      
+                    "-shortest"           
+                ] + container_flags + [final_output]
 
-                subprocess.run(cmd_step2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-                if os.path.exists(final_output):
-                    if os.path.getsize(final_output) > 1000:
-                        media = MediaFileUpload(final_output, mimetype='video/mp4')
-                        up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
-                        worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
-                        print(f"      ✅ Xong: {final_name}")
-                    else: print("      ❌ Lỗi File rỗng (Bước 2)")
-                else: print("      ❌ Lỗi Muxing Bước 2 (Không ra file)")
+                result2 = subprocess.run(cmd_step2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                if os.path.exists(final_output) and os.path.getsize(final_output) > 1000:
+                    media = MediaFileUpload(final_output, mimetype='video/mp4')
+                    up = drive_service.files().create(body={'name': final_name, 'parents': [target_folder_id]}, media_body=media, fields='id').execute()
+                    worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
+                    print(f"      ✅ Xong: {final_name}")
+                else: 
+                    print(f"      ❌ Lỗi Muxing Step 2:\n{result2.stderr[-500:]}")
             else:
-                print("      ❌ Lỗi Render Video Bước 1 (Không ra file temp)")
+                print("      ❌ File Temp không tồn tại (Step 1 failed silent).")
 
             # Cleanup
             if os.path.exists(music_path): os.remove(music_path)
@@ -297,7 +297,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
         if os.path.exists(v2_path): os.remove(v2_path)
 
 # ==============================================================================
-# 4. LOGIC LONG & SHORT (CŨNG CẦN TÁCH CỜ ĐỂ TRÁNH LỖI)
+# 4. LOGIC KHÁC (GIỮ NGUYÊN)
 # ==============================================================================
 def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, all_rows, device_code):
     print("🎬 CHẾ ĐỘ: EDIT LONG VIDEO")
@@ -319,10 +319,14 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             selected_urls = random.sample(src_urls, 4)
             
             music_path = f"temp/music_{row}.mp3"
+            music_ok = False
             if item.get('music_url'):
-                try: download_file(drive_service, get_id_from_url(item['music_url']), music_path)
-                except: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), music_path)
-            else: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), music_path)
+                try: download_file(drive_service, get_id_from_url(item['music_url']), music_path); music_ok = True
+                except: pass
+            if not music_ok:
+                try: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), music_path); music_ok = True
+                except: pass
+            if not music_ok: continue
 
             input_files = []
             for idx, vid_url in enumerate(selected_urls):
@@ -337,8 +341,7 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             device = get_device_info(device_code)
             enc_flags, anti_spam = get_encoding_flags(device)
             cont_flags = get_container_flags(device)
-            
-            # Long Video render 1 bước vì phức tạp, gộp hết cờ vào
+
             inputs_str = "".join([f"-i {f} " for f in input_files])
             filter_str = ""
             for idx in range(4):
@@ -350,8 +353,6 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             curr += off; filter_str += f"[x2][v3]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[vout]"
 
             cmd_inputs = inputs_str.split() + ["-stream_loop", "-1", "-i", music_path]
-            
-            # Gộp cả 2 loại cờ vì Long Video render luôn (không copy stream)
             cmd = ["ffmpeg", "-y"] + cmd_inputs + ["-filter_complex", filter_str, "-map", "[vout]", "-map", f"{len(input_files)}:a", 
                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest"] + enc_flags + cont_flags + [out_path]
             
@@ -385,7 +386,6 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
             print(f"   🔨 Dòng {row}...")
             download_file(drive_service, get_id_from_url(vid['url']), v_path)
             
-            # Tải nhạc
             if vid.get('music'):
                 try: download_file(drive_service, get_id_from_url(vid['music']), a_path)
                 except: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), a_path)
@@ -422,7 +422,7 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
         if os.path.exists(o_path): os.remove(o_path)
 
 def main():
-    print("🚀 BẮT ĐẦU (FINAL FIX)...")
+    print("🚀 BẮT ĐẦU (FINAL DEBUG FIX)...")
     download_font()
     
     payload = json.loads(os.environ.get('PAYLOAD'))
