@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import io
 
-# --- LOAD CONFIG ---
+# --- CONFIG DỰ PHÒNG ---
 try:
     import config
     MUSIC_LIST = config.MUSIC_LIST
@@ -24,11 +24,11 @@ try:
     DEVICE_DB = config.DEVICE_DB
 except ImportError:
     MUSIC_LIST = ["https://drive.google.com/file/d/1ztVtzwvA1kZUg2-_o67kVEvrtCv1LLo-/view?usp=drive_link"]
-    TRANSITIONS = ["fade", "wipeleft", "wiperight"]
+    TRANSITIONS = ["fade", "wipeleft", "wiperight", "slideleft", "slideright"]
     DEVICE_DB = {"ip14": {"make": "Apple", "model": "iPhone 14", "sw": "16.0", "encoder": "iOS 16.0", "vendor": "appl"}}
 
 # ==============================================================================
-# HELPER FUNCTIONS
+# CÁC HÀM HỖ TRỢ
 # ==============================================================================
 
 def get_random_past_time():
@@ -51,9 +51,7 @@ def get_device_info(user_input):
     return device
 
 def get_ffmpeg_flags(device):
-    """
-    Trả về bộ cờ FFmpeg (Encoding + Metadata) cho chế độ 1 Bước (Single Pass)
-    """
+    """Cờ FFmpeg cho chế độ Render 1 Lần (Single Pass)"""
     make = device.get("make", "Apple")
     model = device.get("model", "iPhone")
     sw = device.get("sw", "iOS")
@@ -63,7 +61,6 @@ def get_ffmpeg_flags(device):
     
     bitrate = f"{random.randint(3500, 5500)}k"
     
-    # Anti-Spam Visual (Đổi màu nhẹ)
     gamma = round(random.uniform(0.98, 1.02), 2)
     sat = round(random.uniform(0.98, 1.02), 2)
     video_filter = f"eq=gamma={gamma}:saturation={sat}"
@@ -84,7 +81,7 @@ def get_ffmpeg_flags(device):
         "-bufsize", "12000k",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
-        "-x264-params", "no-info=1", # Ẩn danh Encoder
+        "-x264-params", "no-info=1",
     ]
     return flags, video_filter
 
@@ -158,10 +155,10 @@ def get_or_create_folder(drive_service, parent_id, suffix=""):
     return items[0]['id']
 
 # ==============================================================================
-# MODE 1: MIX 2 VIDEO (ONE PASS - STABLE)
+# MODE 1: MIX 2 VIDEO (FIXED SINGLE PASS)
 # ==============================================================================
 def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, pairs, device_code):
-    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (ONE PASS STABLE)")
+    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (FIXED SINGLE PASS)")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix=" mix 2 video")
     os.makedirs("temp", exist_ok=True)
     date_fn = datetime.now().strftime('%d%m%Y')
@@ -179,9 +176,10 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             download_file(drive_service, get_id_from_url(item2['url']), v2_path)
         except: continue
 
+        # Lấy thời lượng để tính toán cắt nhạc
         dur1 = get_video_duration(v1_path)
         dur2 = get_video_duration(v2_path)
-        print(f"   ⏱️ Info: {dur1}s + {dur2}s")
+        print(f"   ⏱️ Info: Clip1={dur1}s, Clip2={dur2}s")
 
         tasks = [
             (item1, v1_path, v2_path, dur1, dur2, f"{item1['row']}_{item2['row']}"), 
@@ -197,7 +195,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             
             print(f"   🔨 Render {final_name}...")
 
-            # Nhạc
+            # Tải Nhạc
             music_ok = False
             if item.get('music'):
                 try: download_file(drive_service, get_id_from_url(item['music']), music_path); music_ok = True
@@ -215,7 +213,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             offset = d_a - 0.5
             if offset < 0: offset = 0
             
-            # Tính Total Duration để cắt chuẩn
+            # Tính Tổng thời lượng (để cắt nhạc chuẩn)
             total_duration = d_a + d_b - 0.5
 
             # --- FILTER COMPLEX ---
@@ -228,13 +226,13 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             filter_str += f"[v0s][v1s]xfade=transition={transition}:duration=0.5:offset={offset}[v_merged];"
             
             # 3. Inputs
-            # -stream_loop -1 trước nhạc để loop vô tận
+            # QUAN TRỌNG: -stream_loop -1 để nhạc không bao giờ hết trước video
             inputs = ["-i", vid_a, "-i", vid_b, "-stream_loop", "-1", "-i", music_path]
             
-            # 4. Map Audio (Lấy nhạc làm tiếng chính)
+            # 4. Map
             map_cmd = ["-map", "[vout]", "-map", "2:a"]
 
-            # 5. Overlay Text
+            # 5. Overlay
             if item.get('text'):
                 create_text_overlay(item['text'], 1080, 1920, img_path)
                 inputs.extend(["-i", img_path])
@@ -243,7 +241,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                 filter_str += f"[v_merged]null[vout]"
 
             # 6. Command
-            # Dùng -t thay vì -shortest để cắt chính xác theo duration video
+            # QUAN TRỌNG: -t [total_duration] để cắt video đúng điểm kết thúc
             cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_str] + map_cmd + \
                   ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-t", str(total_duration)] + \
                   ffmpeg_flags + [out_path]
@@ -256,7 +254,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                 worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
                 print(f"      ✅ Xong ({total_duration}s)")
             else:
-                print(f"      ❌ Lỗi Render (File rỗng/Không tạo được)")
+                print(f"      ❌ Lỗi Render (File rỗng)")
 
             # Cleanup
             if os.path.exists(music_path): os.remove(music_path)
@@ -388,11 +386,8 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
         if os.path.exists(i_path): os.remove(i_path)
         if os.path.exists(o_path): os.remove(o_path)
 
-# ==============================================================================
-# MAIN
-# ==============================================================================
 def main():
-    print("🚀 BẮT ĐẦU (ONE PASS FINAL)...")
+    print("🚀 BẮT ĐẦU (SINGLE PASS UNIFIED)...")
     download_font()
     
     payload = json.loads(os.environ.get('PAYLOAD'))
