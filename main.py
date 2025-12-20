@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import io
 
-# --- CONFIG DỰ PHÒNG ---
+# --- LOAD CONFIG ---
 try:
     import config
     MUSIC_LIST = config.MUSIC_LIST
@@ -24,11 +24,11 @@ try:
     DEVICE_DB = config.DEVICE_DB
 except ImportError:
     MUSIC_LIST = ["https://drive.google.com/file/d/1ztVtzwvA1kZUg2-_o67kVEvrtCv1LLo-/view?usp=drive_link"]
-    TRANSITIONS = ["fade", "wipeleft", "wiperight", "slideleft", "slideright"]
+    TRANSITIONS = ["fade", "wipeleft", "wiperight"]
     DEVICE_DB = {"ip14": {"make": "Apple", "model": "iPhone 14", "sw": "16.0", "encoder": "iOS 16.0", "vendor": "appl"}}
 
 # ==============================================================================
-# CÁC HÀM HỖ TRỢ
+# HELPER FUNCTIONS
 # ==============================================================================
 
 def get_random_past_time():
@@ -50,9 +50,9 @@ def get_device_info(user_input):
         device = random.choice(list(DEVICE_DB.values()))
     return device
 
-def get_full_flags(device):
+def get_ffmpeg_flags(device):
     """
-    Tổng hợp tất cả cờ (Encoding + Metadata) cho chế độ Render 1 Bước
+    Trả về bộ cờ FFmpeg (Encoding + Metadata) cho chế độ 1 Bước (Single Pass)
     """
     make = device.get("make", "Apple")
     model = device.get("model", "iPhone")
@@ -63,7 +63,7 @@ def get_full_flags(device):
     
     bitrate = f"{random.randint(3500, 5500)}k"
     
-    # Anti-Spam Visual Filter
+    # Anti-Spam Visual (Đổi màu nhẹ)
     gamma = round(random.uniform(0.98, 1.02), 2)
     sat = round(random.uniform(0.98, 1.02), 2)
     video_filter = f"eq=gamma={gamma}:saturation={sat}"
@@ -84,8 +84,7 @@ def get_full_flags(device):
         "-bufsize", "12000k",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
-        # Các cờ ẩn danh nâng cao (Đã test ổn định)
-        "-x264-params", "no-info=1",
+        "-x264-params", "no-info=1", # Ẩn danh Encoder
     ]
     return flags, video_filter
 
@@ -159,10 +158,10 @@ def get_or_create_folder(drive_service, parent_id, suffix=""):
     return items[0]['id']
 
 # ==============================================================================
-# 3. LOGIC XỬ LÝ MIX 2 VIDEO (SINGLE PASS - GIỐNG LONG VIDEO)
+# MODE 1: MIX 2 VIDEO (ONE PASS - STABLE)
 # ==============================================================================
 def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, pairs, device_code):
-    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (SINGLE PASS + XFADE)")
+    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (ONE PASS STABLE)")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix=" mix 2 video")
     os.makedirs("temp", exist_ok=True)
     date_fn = datetime.now().strftime('%d%m%Y')
@@ -175,20 +174,15 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
         v1_path = f"temp/v1_{p_idx}.mp4"
         v2_path = f"temp/v2_{p_idx}.mp4"
         
-        # Tải Video
         try:
             download_file(drive_service, get_id_from_url(item1['url']), v1_path)
             download_file(drive_service, get_id_from_url(item2['url']), v2_path)
         except: continue
 
-        # Kiểm tra file
-        if os.path.getsize(v1_path) < 1000 or os.path.getsize(v2_path) < 1000:
-            print("      ❌ File video nguồn lỗi/quá nhỏ.")
-            continue
-
         dur1 = get_video_duration(v1_path)
         dur2 = get_video_duration(v2_path)
-        
+        print(f"   ⏱️ Info: {dur1}s + {dur2}s")
+
         tasks = [
             (item1, v1_path, v2_path, dur1, dur2, f"{item1['row']}_{item2['row']}"), 
             (item2, v2_path, v1_path, dur2, dur1, f"{item2['row']}_{item1['row']}") 
@@ -201,9 +195,9 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             music_path = f"temp/music_{row}.mp3"
             img_path = f"temp/overlay_{row}.png"
             
-            print(f"   🔨 Dòng {row}: Đang Render...")
+            print(f"   🔨 Render {final_name}...")
 
-            # Tải Nhạc
+            # Nhạc
             music_ok = False
             if item.get('music'):
                 try: download_file(drive_service, get_id_from_url(item['music']), music_path); music_ok = True
@@ -213,31 +207,34 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                 except: pass
             if not music_ok: continue
 
-            # Lấy thông số
+            # Params
             device = get_device_info(device_code)
-            full_flags, anti_spam_filter = get_full_flags(device)
+            ffmpeg_flags, anti_spam_filter = get_ffmpeg_flags(device)
             transition = random.choice(TRANSITIONS)
             
             offset = d_a - 0.5
             if offset < 0: offset = 0
             
-            # Tính tổng thời gian để cắt (QUAN TRỌNG)
+            # Tính Total Duration để cắt chuẩn
             total_duration = d_a + d_b - 0.5
 
             # --- FILTER COMPLEX ---
+            # 1. Scale + AntiSpam
             filter_str = ""
             filter_str += f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v0s];"
             filter_str += f"[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v1s];"
+            
+            # 2. Xfade nối video
             filter_str += f"[v0s][v1s]xfade=transition={transition}:duration=0.5:offset={offset}[v_merged];"
             
-            # --- INPUTS (SINGLE PASS) ---
-            # Lưu ý: -stream_loop -1 phải đặt ngay trước input nhạc
+            # 3. Inputs
+            # -stream_loop -1 trước nhạc để loop vô tận
             inputs = ["-i", vid_a, "-i", vid_b, "-stream_loop", "-1", "-i", music_path]
             
-            # Mapping
+            # 4. Map Audio (Lấy nhạc làm tiếng chính)
             map_cmd = ["-map", "[vout]", "-map", "2:a"]
 
-            # Overlay
+            # 5. Overlay Text
             if item.get('text'):
                 create_text_overlay(item['text'], 1080, 1920, img_path)
                 inputs.extend(["-i", img_path])
@@ -245,13 +242,13 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             else:
                 filter_str += f"[v_merged]null[vout]"
 
-            # --- LỆNH FFmpeg ---
-            # Dùng -t (Total Duration) thay vì -shortest để đảm bảo nhạc không bị ngắt hoặc chạy lố
+            # 6. Command
+            # Dùng -t thay vì -shortest để cắt chính xác theo duration video
             cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_str] + map_cmd + \
                   ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-t", str(total_duration)] + \
-                  full_flags + [out_path]
+                  ffmpeg_flags + [out_path]
             
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
                 media = MediaFileUpload(out_path, mimetype='video/mp4')
@@ -259,7 +256,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
                 worksheet.update_cell(row, 8, f"https://drive.google.com/uc?export=download&id={up.get('id')}")
                 print(f"      ✅ Xong ({total_duration}s)")
             else:
-                print(f"      ❌ Lỗi Render:\n{result.stderr[-500:]}") # In 500 ký tự lỗi cuối cùng
+                print(f"      ❌ Lỗi Render (File rỗng/Không tạo được)")
 
             # Cleanup
             if os.path.exists(music_path): os.remove(music_path)
@@ -270,7 +267,7 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
         if os.path.exists(v2_path): os.remove(v2_path)
 
 # ==============================================================================
-# 4. LOGIC LONG VIDEO (ĐÃ ĐỒNG BỘ FLAGS)
+# MODE 2: LONG VIDEO
 # ==============================================================================
 def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, all_rows, device_code):
     print("🎬 CHẾ ĐỘ: EDIT LONG VIDEO")
@@ -308,12 +305,12 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             out_path = f"temp/{out_name}"
             
             device = get_device_info(device_code)
-            full_flags, anti_spam_filter = get_full_flags(device)
+            ffmpeg_flags, anti_spam = get_ffmpeg_flags(device)
 
             inputs_str = "".join([f"-i {f} " for f in input_files])
             filter_str = ""
             for idx in range(4):
-                filter_str += f"[{idx}:v]trim=0:3,setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v{idx}];"
+                filter_str += f"[{idx}:v]trim=0:3,setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam}[v{idx}];"
             
             off = 2.5; curr = off
             filter_str += f"[v0][v1]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[x1];"
@@ -321,9 +318,8 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             curr += off; filter_str += f"[x2][v3]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[vout]"
 
             cmd_inputs = inputs_str.split() + ["-stream_loop", "-1", "-i", music_path]
-            
             cmd = ["ffmpeg", "-y"] + cmd_inputs + ["-filter_complex", filter_str, "-map", "[vout]", "-map", f"{len(input_files)}:a", 
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest"] + full_flags + [out_path]
+                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-t", "10.5"] + ffmpeg_flags + [out_path]
             
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -337,6 +333,9 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             if os.path.exists(music_path): os.remove(music_path)
             if os.path.exists(out_path): os.remove(out_path)
 
+# ==============================================================================
+# MODE 3: SHORT VIDEO
+# ==============================================================================
 def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, videos, device_code):
     print("\n🎬 CHẾ ĐỘ: SHORT VIDEO")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix="")
@@ -361,18 +360,18 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
             else: download_file(drive_service, get_id_from_url(random.choice(MUSIC_LIST)), a_path)
 
             device = get_device_info(device_code)
-            full_flags, anti_spam = get_full_flags(device)
+            ffmpeg_flags, anti_spam = get_ffmpeg_flags(device)
 
             if vid.get('text'):
                 w, h = get_video_size(v_path)
                 create_text_overlay(vid['text'], w, h, i_path)
                 cmd = ["ffmpeg", "-y", "-v", "error", "-i", v_path, "-stream_loop", "-1", "-i", a_path, "-i", i_path, 
                        "-filter_complex", f"[0:v]{anti_spam}[vf];[vf][2:v]overlay=0:0", 
-                       "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", "-shortest"] + full_flags + [o_path]
+                       "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", "-shortest"] + ffmpeg_flags + [o_path]
             else:
                 cmd = ["ffmpeg", "-y", "-v", "error", "-i", v_path, "-stream_loop", "-1", "-i", a_path, 
                        "-vf", anti_spam, 
-                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-map", "0:v", "-map", "1:a", "-shortest"] + full_flags + [o_path]
+                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-map", "0:v", "-map", "1:a", "-shortest"] + ffmpeg_flags + [o_path]
             
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
@@ -389,8 +388,11 @@ def process_short_video_mode(drive_service, worksheet, sheet_name, parent_folder
         if os.path.exists(i_path): os.remove(i_path)
         if os.path.exists(o_path): os.remove(o_path)
 
+# ==============================================================================
+# MAIN
+# ==============================================================================
 def main():
-    print("🚀 BẮT ĐẦU (SINGLE PASS UNIFIED)...")
+    print("🚀 BẮT ĐẦU (ONE PASS FINAL)...")
     download_font()
     
     payload = json.loads(os.environ.get('PAYLOAD'))
