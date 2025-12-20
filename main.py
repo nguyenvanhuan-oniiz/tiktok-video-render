@@ -23,10 +23,10 @@ try:
     TRANSITIONS = config.TRANSITIONS
     DEVICE_DB = config.DEVICE_DB
 except ImportError:
-    # Mặc định nếu thiếu file config
+    # Dùng mặc định nếu thiếu file config
     MUSIC_LIST = ["https://drive.google.com/file/d/1ztVtzwvA1kZUg2-_o67kVEvrtCv1LLo-/view?usp=drive_link"]
-    TRANSITIONS = ["fade", "wipeleft", "wiperight", "slideleft", "slideright"]
-    DEVICE_DB = {"ip14": {"make": "Apple", "model": "iPhone 14", "sw": "16.0", "encoder": "iOS 16.0"}}
+    TRANSITIONS = ["fade", "wipeleft", "wiperight", "slideleft", "slideright", "circlecrop", "rectcrop", "distance", "pixelize", "radial"]
+    DEVICE_DB = {"ip14": {"make": "Apple", "model": "iPhone 14", "sw": "16.0", "encoder": "iOS 16.0", "vendor": "appl"}}
 
 # ==============================================================================
 # CÁC HÀM HỖ TRỢ
@@ -39,7 +39,6 @@ def get_random_past_time():
     return past_time.strftime('%Y-%m-%dT%H:%M:%S')
 
 def get_metadata_flags(user_input):
-    """Lấy Metadata giả lập"""
     user_input = str(user_input).strip()
     device = None
     
@@ -56,8 +55,10 @@ def get_metadata_flags(user_input):
     model = device.get("model", "iPhone")
     sw = device.get("sw", "iOS")
     encoder_fake = device.get("encoder", "iOS 16.0")
+    vendor_id = device.get("vendor", "appl")
+    
     creation_time = get_random_past_time()
-    bitrate = f"{random.randint(2500, 4500)}k"
+    bitrate = f"{random.randint(3000, 5000)}k"
     
     # Anti-Spam Visual Filter (Thay đổi màu sắc nhẹ)
     gamma = round(random.uniform(0.98, 1.02), 2)
@@ -65,7 +66,7 @@ def get_metadata_flags(user_input):
     video_filter = f"eq=gamma={gamma}:saturation={sat}"
 
     flags = [
-        "-map_metadata", "-1",
+        "-map_metadata", "-1", # Xóa sạch meta cũ
         "-metadata", f"creation_time={creation_time}",
         "-metadata", "language=vie",
         "-metadata", f"make={make}",
@@ -74,8 +75,11 @@ def get_metadata_flags(user_input):
         "-metadata", f"encoder={encoder_fake}",
         "-metadata:s:v:0", "handler_name=Core Media Video",
         "-metadata:s:a:0", "handler_name=Core Media Audio",
-        "-b:v", bitrate, "-maxrate", "5000k", "-bufsize", "10000k",
-        "-movflags", "+faststart"
+        "-vendor", vendor_id,
+        "-b:v", bitrate, "-maxrate", "6000k", "-bufsize", "12000k",
+        "-movflags", "+faststart",
+        "-x264-params", "no-info=1",
+        "-bsf:v", "h264_metadata=sei_user_data=''"
     ]
     return flags, video_filter
 
@@ -87,7 +91,8 @@ def get_video_duration(video_path):
     try:
         cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
-        return float(result.stdout.strip())
+        val = float(result.stdout.strip())
+        return val if val > 0 else 6.0
     except: return 6.0 
 
 def get_video_size(video_path):
@@ -151,7 +156,7 @@ def get_or_create_folder(drive_service, parent_id, suffix=""):
 # 3. LOGIC XỬ LÝ MIX 2 VIDEO (RENDER 2 BƯỚC)
 # ==============================================================================
 def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, pairs, device_code):
-    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (RENDER 2 BƯỚC - NHẠC FULL)")
+    print("\n🎬 CHẾ ĐỘ: MIX 2 VIDEO (RENDER 2 BƯỚC + XFADE)")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix=" mix 2 video")
     os.makedirs("temp", exist_ok=True)
     date_fn = datetime.now().strftime('%d%m%Y')
@@ -214,6 +219,8 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             filter_v = ""
             filter_v += f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v0s];"
             filter_v += f"[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,{anti_spam_filter}[v1s];"
+            
+            # XFADE (Thay vì Concat)
             filter_v += f"[v0s][v1s]xfade=transition={transition}:duration=0.5:offset={offset}[v_merged];"
             
             inputs_v = ["-i", vid_a, "-i", vid_b]
@@ -225,9 +232,9 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             else:
                 filter_v += f"[v_merged]null[v_out]"
 
-            # Render ra file video câm
+            # Render ra file video câm (-an)
             cmd_step1 = ["ffmpeg", "-y"] + inputs_v + ["-filter_complex", filter_v, "-map", "[v_out]", 
-                         "-c:v", "libx264", "-preset", "veryfast", "-an", temp_video_only] # -an: No Audio
+                         "-c:v", "libx264", "-preset", "veryfast", "-an", temp_video_only] 
             
             subprocess.run(cmd_step1, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -237,13 +244,12 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
             if os.path.exists(temp_video_only):
                 # Input 0: Video đã ghép (Thời lượng chuẩn)
                 # Input 1: Nhạc (Loop vô tận)
-                # -shortest: Cắt nhạc theo độ dài video (vì video là hữu hạn, nhạc là vô hạn)
                 
                 cmd_step2 = [
                     "ffmpeg", "-y",
                     "-i", temp_video_only,
                     "-stream_loop", "-1", "-i", music_path,
-                    "-c:v", "copy",       # Copy video stream (Siêu nhanh, không render lại)
+                    "-c:v", "copy",       # Copy video stream (Không render lại -> Giữ nguyên chất lượng B1)
                     "-c:a", "aac",        # Encode nhạc
                     "-map", "0:v:0",      # Lấy hình từ file temp
                     "-map", "1:a:0",      # Lấy tiếng từ file nhạc
@@ -273,10 +279,10 @@ def process_mix_2_mode(drive_service, worksheet, sheet_name, parent_folder_id, p
         if os.path.exists(v2_path): os.remove(v2_path)
 
 # ==============================================================================
-# 4. LOGIC XỬ LÝ LONG VIDEO (BƯỚC 1 + 2)
+# 4. LOGIC KHÁC (GIỮ NGUYÊN)
 # ==============================================================================
 def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_id, all_rows, device_code):
-    print("🎬 CHẾ ĐỘ: EDIT LONG VIDEO (7 SOURCE)")
+    print("🎬 CHẾ ĐỘ: EDIT LONG VIDEO")
     target_folder_id = get_or_create_folder(drive_service, parent_folder_id, suffix="-Edited")
     CHUNK = 7
     product_groups = [all_rows[i:i + CHUNK] for i in range(0, len(all_rows), CHUNK)]
@@ -326,12 +332,9 @@ def process_long_video_mode(drive_service, worksheet, sheet_name, parent_folder_
             curr += off; filter_str += f"[x1][v2]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[x2];"
             curr += off; filter_str += f"[x2][v3]xfade=transition={random.choice(TRANSITIONS)}:duration=0.5:offset={curr}[vout]"
 
-            # Thêm input nhạc với stream loop
             cmd_inputs = inputs_str.split() + ["-stream_loop", "-1", "-i", music_path]
-            
-            # Ở đây vẫn render 1 bước vì logic filter phức tạp, nhưng đã thêm stream loop
             cmd = ["ffmpeg", "-y"] + cmd_inputs + ["-filter_complex", filter_str, "-map", "[vout]", "-map", f"{len(input_files)}:a", 
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest"] + meta_flags + [out_path]
+                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-t", "10.5"] + meta_flags + [out_path]
             
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
