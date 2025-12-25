@@ -117,7 +117,7 @@ def create_text_overlay(text, video_width, video_height, output_img="overlay.png
     except: font = ImageFont.load_default()
     clean_text = re.sub(r'[^\u0000-\uFFFF]', '', str(text)).strip()
     wrapped_lines = textwrap.wrap(clean_text, width=int((video_width * 0.6) / (font_size * 0.5)))
-    draw.multiline_text((video_width/2, 400), "\n".join(wrapped_lines), font=font, fill="white", anchor="ma", align="center", stroke_width=3, stroke_fill="black")
+    draw.multiline_text((video_width/2, 800), "\n".join(wrapped_lines), font=font, fill="white", anchor="ma", align="center", stroke_width=3, stroke_fill="black")
     img.save(output_img)
 
 def get_id_from_url(url):
