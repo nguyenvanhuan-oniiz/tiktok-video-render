@@ -112,11 +112,11 @@ def get_video_size(video_path):
 def create_text_overlay(text, video_width, video_height, output_img="overlay.png"):
     img = Image.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    font_size = int(video_width / 12)
+    font_size = int(video_width / 20)
     try: font = ImageFont.truetype("arial.ttf", font_size)
     except: font = ImageFont.load_default()
     clean_text = re.sub(r'[^\u0000-\uFFFF]', '', str(text)).strip()
-    wrapped_lines = textwrap.wrap(clean_text, width=int((video_width * 0.5) / (font_size * 0.5)))
+    wrapped_lines = textwrap.wrap(clean_text, width=int((video_width * 0.8) / (font_size * 0.8)))
     draw.multiline_text((video_width/2, 900), "\n".join(wrapped_lines), font=font, fill="white", anchor="ma", align="center", stroke_width=3, stroke_fill="black")
     img.save(output_img)
 
