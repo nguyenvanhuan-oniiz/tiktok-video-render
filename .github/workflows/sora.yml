@@ -1,0 +1,34 @@
+name: Sora Video Processor
+
+on:
+  repository_dispatch:
+    types: [process_sora]
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests google-api-python-client google-auth google-auth-oauthlib
+
+      - name: Create Token File
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        run: |
+          # Ghi nội dung secret ra file token.json để script đọc
+          echo "$GOOGLE_TOKEN_JSON" > token.json
+
+      - name: Run Processor
+        env:
+          # Lấy payload JSON từ sự kiện dispatch và đưa vào biến môi trường
+          INPUT_DATA: ${{ toJson(github.event.client_payload) }}
+        run: python main.py
