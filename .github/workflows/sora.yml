@@ -5,30 +5,28 @@ on:
     types: [process_sora]
 
 jobs:
-  download-and-upload:
+  run-sora-job:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout mã nguồn
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Thiết lập Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Cài đặt thư viện
         run: |
           pip install requests google-api-python-client google-auth google-auth-oauthlib
 
-      - name: Create Token File
+      - name: Khởi tạo xác thực Google
         env:
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
         run: |
-          # Ghi nội dung secret ra file token.json để script đọc
           echo "$GOOGLE_TOKEN_JSON" > token.json
 
-      - name: Run Processor
+      - name: Chạy Script xử lý video
         env:
-          # Lấy payload JSON từ sự kiện dispatch và đưa vào biến môi trường
           INPUT_DATA: ${{ toJson(github.event.client_payload) }}
         run: python main.py
